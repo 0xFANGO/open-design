@@ -538,6 +538,14 @@ Daemon 启动时从 `PATH` 自动检测，无需配置。
 
 这是一个早期实现 —— 闭环（检测 → 选 skill + design system → 对话 → 解析 `<artifact>` → 预览 → 保存）已经端到端跑通。提示词栈和 skill 库是价值最重的部分，目前已稳定。组件级 UI 仍在每天迭代。
 
+## 给我们点个 Star
+
+<p align="center">
+  <a href="https://github.com/nexu-io/open-design"><img src="docs/assets/star-us.png" alt="给 Open Design 点个 Star —— github.com/nexu-io/open-design" width="100%" /></a>
+</p>
+
+如果这套东西帮你省了半小时，给它一个 ★。Star 不付房租，但它告诉下一个设计师、Agent 和贡献者：这个实验值得他们的注意力。一次点击、三秒钟、真实信号：[github.com/nexu-io/open-design](https://github.com/nexu-io/open-design)。
+
 ## 贡献
 
 欢迎 issue、PR、新 skill、新 design system。收益最高的贡献往往就是一个文件夹、一份 Markdown，或者一个 PR 大小的 adapter：
