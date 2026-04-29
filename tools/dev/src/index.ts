@@ -1,29 +1,59 @@
-import { cac } from "cac";
-import { mkdir, open } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
+import { cac } from "cac";
+
 import {
-  allocateDevPorts,
   APP_KEYS,
+  createRuntimeToken,
   createStampedLaunchEnv,
   createStampedProcessArgs,
+  inspectDesktopRuntime,
+  inspectNextjsRuntime,
   matchesStampedProcess,
-  readJsonFile,
-  removeFile,
   requestJsonIpc,
-  writeJsonFile,
+  waitForDesktopRuntime,
+  waitForNextjsRuntime,
+  type DesktopClickResult,
+  type DesktopConsoleResult,
+  type DesktopEvalResult,
+  type DesktopScreenshotResult,
+  type DesktopStatusSnapshot,
+  type NextjsStatusSnapshot,
 } from "@open-design/sidecar";
 import {
   collectProcessTreePids,
-  isProcessAlive,
+  createPackageManagerInvocation,
   listProcessSnapshots,
   readLogTail,
   spawnBackgroundProcess,
   stopProcesses,
-  waitForProcessExit,
+  type StopProcessesResult,
 } from "@open-design/platform";
 
-import { parsePortOption, resolveBaseConfig, resolveRunConfig, type ToolDevOptions } from "./config.js";
+import {
+  DEFAULT_START_APPS,
+  DEFAULT_STOP_APPS,
+  parsePortOption,
+  resolveTargetApps,
+  resolveToolDevConfig,
+  type ToolDevAppName,
+  type ToolDevConfig,
+  type ToolDevOptions,
+} from "./config.js";
+
+type CliOptions = ToolDevOptions & {
+  expr?: string;
+  path?: string;
+  selector?: string;
+  timeout?: string;
+};
+
+const APP_PROCESS_ROLE: Record<ToolDevAppName, string> = {
+  desktop: "desktop-sidecar",
+  nextjs: "nextjs-sidecar",
+};
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -37,362 +67,395 @@ function exitWithError(error: unknown): never {
 process.on("uncaughtException", exitWithError);
 process.on("unhandledRejection", exitWithError);
 
-type CliOptions = ToolDevOptions & {
-  positionals?: string[];
-};
-
 function printJson(payload: unknown): void {
   process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
 }
 
 function output(payload: unknown, options: CliOptions = {}): void {
-  if (options.json === true) {
-    printJson(payload);
+  if (typeof payload === "string" && options.json !== true) {
+    process.stdout.write(`${payload}\n`);
     return;
   }
-
-  if (typeof payload === "string") process.stdout.write(`${payload}\n`);
-  else printJson(payload);
+  printJson(payload);
 }
 
-async function requestStatus(pointer: any, timeoutMs = 1500) {
-  return await requestJsonIpc(pointer.controllerIpcPath, { type: "status" }, { timeoutMs });
+function runtimeLookup(config: ToolDevConfig) {
+  return { base: config.toolsDevRoot, namespace: config.namespace };
 }
 
-async function findStampedProcesses(manifest: any) {
-  const processes = await listProcessSnapshots();
-  return processes.filter((processInfo: any) =>
-    matchesStampedProcess(processInfo, {
-      namespace: manifest.namespace,
-      runtimeToken: manifest.runtimeToken,
-      source: "tools-dev",
-    }),
-  );
+function appConfig(config: ToolDevConfig, appName: ToolDevAppName) {
+  return config.apps[appName];
 }
 
-async function readCurrentRuntime(options: CliOptions) {
-  const base = resolveBaseConfig(options);
-  const pointer = await readJsonFile(base.pointerPath);
-  if (!pointer) return { base, state: "missing" };
-
-  try {
-    const currentStatus = await requestStatus(pointer);
-    return { base, pointer, state: "running", status: currentStatus };
-  } catch (error) {
-    const manifest = await readJsonFile(pointer.manifestPath);
-    const activeProcesses = manifest ? await findStampedProcesses(manifest) : [];
-    return {
-      activeProcesses,
-      base,
-      error: error instanceof Error ? error.message : String(error),
-      manifest,
-      pointer,
-      state: activeProcesses.length > 0 ? "stale-active" : "stale-dead",
-    };
-  }
+async function openAppLog(config: ToolDevConfig, appName: ToolDevAppName): Promise<FileHandle> {
+  const logPath = appConfig(config, appName).latestLogPath;
+  await mkdir(path.dirname(logPath), { recursive: true });
+  return await open(logPath, "a");
 }
 
-async function cleanupDeadPointer(runtime: any) {
-  if (runtime.state === "stale-dead" && runtime.base?.pointerPath) {
-    await removeFile(runtime.base.pointerPath);
-  }
+async function runLoggedCommand(request: {
+  args: string[];
+  command: string;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  logFd: number;
+}): Promise<void> {
+  const child = spawn(request.command, request.args, {
+    cwd: request.cwd,
+    env: request.env,
+    stdio: ["ignore", request.logFd, request.logFd],
+    windowsHide: process.platform === "win32",
+  });
+
+  await new Promise<void>((resolveRun, rejectRun) => {
+    child.once("error", rejectRun);
+    child.once("exit", (code, signal) => {
+      if (code === 0) {
+        resolveRun();
+        return;
+      }
+      rejectRun(new Error(`command failed: ${request.command} ${request.args.join(" ")} (${signal ?? code})`));
+    });
+  });
 }
 
-function createInitialManifest({ config, controllerPid, portPlan }: any) {
-  const host = portPlan.host;
-  const daemonUrl = `http://${host}:${portPlan.daemon.port}`;
-  const webUrl = `http://${host}:${portPlan.web.port}`;
-  const now = new Date().toISOString();
+function createAppStamp(config: ToolDevConfig, appName: ToolDevAppName) {
+  const runtimeToken = createRuntimeToken();
+  const currentAppConfig = appConfig(config, appName);
+  const stamp = {
+    appKey: appName,
+    controllerIpcPath: currentAppConfig.ipcPath,
+    mode: "dev" as const,
+    namespace: config.namespace,
+    runtimeToken,
+  };
 
   return {
-    apps: {
-      controller: {
-        exitCode: null,
-        logPath: config.apps.controller.logPath,
-        pid: controllerPid,
-        status: "starting",
-        url: null,
+    args: createStampedProcessArgs({
+      origin: {
+        namespace: config.namespace,
+        role: APP_PROCESS_ROLE[appName],
+        source: "tools-dev",
       },
-      daemon: {
-        exitCode: null,
-        logPath: config.apps.daemon.logPath,
-        pid: null,
-        status: "pending",
-        url: daemonUrl,
-      },
-      web: {
-        exitCode: null,
-        logPath: config.apps.web.logPath,
-        pid: null,
-        status: "pending",
-        url: webUrl,
-      },
-    },
-    controller: {
-      ipcPath: config.controllerIpcPath,
-      pid: controllerPid,
-    },
-    createdAt: now,
-    error: null,
-    mode: "dev",
-    namespace: config.namespace,
-    portSources: {
-      daemon: portPlan.daemon.source,
-      web: portPlan.web.source,
-    },
-    ports: {
-      daemon: portPlan.daemon.port,
-      host,
-      web: portPlan.web.port,
-    },
-    runtimeRoot: config.runtimeRoot,
-    runtimeToken: config.runtimeToken,
-    schemaVersion: 1,
-    status: "starting",
-    toolsDevRoot: config.toolsDevRoot,
-    updatedAt: now,
-    urls: {
-      daemon: daemonUrl,
-      web: webUrl,
-    },
-    workspaceRoot: config.workspaceRoot,
+      stamp,
+    }),
+    env: createStampedLaunchEnv({
+      controllerIpcPath: currentAppConfig.ipcPath,
+      namespace: config.namespace,
+      runtimeToken,
+      sidecarBase: config.toolsDevRoot,
+    }),
+    runtimeToken,
   };
 }
 
-async function openControllerLog(config: any) {
-  await mkdir(path.dirname(config.apps.controller.logPath), { recursive: true });
-  return await open(config.apps.controller.logPath, "a");
+async function findAppProcessTree(config: ToolDevConfig, appName: ToolDevAppName) {
+  const processes = await listProcessSnapshots();
+  const rootPids = processes
+    .filter((processInfo) =>
+      matchesStampedProcess(processInfo, {
+        appKey: appName,
+        namespace: config.namespace,
+        source: "tools-dev",
+      }),
+    )
+    .map((processInfo) => processInfo.pid);
+  const pids = collectProcessTreePids(processes, rootPids);
+
+  return { pids, rootPids };
 }
 
-async function waitForControllerReady(pointer: any, timeoutMs = 35000) {
+async function waitForAppProcessExit(config: ToolDevConfig, appName: ToolDevAppName, timeoutMs = 5000): Promise<number[]> {
   const startedAt = Date.now();
-  let lastError: unknown = null;
-
   while (Date.now() - startedAt < timeoutMs) {
-    try {
-      const currentStatus: any = await requestStatus(pointer, 1000);
-      if (currentStatus.status === "running") return currentStatus;
-      if (currentStatus.status === "error") {
-        throw new Error(currentStatus.error || "controller failed to start");
-      }
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    const current = await findAppProcessTree(config, appName);
+    if (current.pids.length === 0) return [];
+    await new Promise((resolveWait) => setTimeout(resolveWait, 120));
   }
-
-  throw new Error(
-    `controller did not become ready in time${lastError instanceof Error ? `: ${lastError.message}` : ""}`,
-  );
+  return (await findAppProcessTree(config, appName)).pids;
 }
 
-async function start(options: CliOptions) {
-  const existing = await readCurrentRuntime(options);
-  if (existing.state === "running") {
-    throw new Error(`namespace "${(existing as any).status.namespace}" is already running; use tools-dev status, stop, or restart`);
-  }
-  if (existing.state === "stale-active") {
+async function assertNoStaleActiveProcess(config: ToolDevConfig, appName: ToolDevAppName): Promise<void> {
+  const active = await findAppProcessTree(config, appName);
+  if (active.pids.length > 0) {
     throw new Error(
-      `namespace "${(existing as any).manifest?.namespace ?? options.namespace ?? "default"}" has stale active processes; run tools-dev stop first`,
+      `${appName} has active stamped processes but no reachable IPC status; run tools-dev stop ${appName} first`,
     );
   }
-  await cleanupDeadPointer(existing);
+}
 
-  const daemonPort = parsePortOption(options.daemonPort ?? process.env.OD_PORT, "--daemon-port");
-  const webPort = parsePortOption(options.webPort ?? process.env.VITE_PORT, "--web-port");
-  const portPlan = await allocateDevPorts({ daemonPort, webPort });
-  const config = resolveRunConfig(options);
-  const pointer = {
-    controllerIpcPath: config.controllerIpcPath,
-    manifestPath: config.manifestPath,
-    namespace: config.namespace,
-    runtimeRoot: config.runtimeRoot,
-    runtimeToken: config.runtimeToken,
-    toolsDevRoot: config.toolsDevRoot,
-    updatedAt: new Date().toISOString(),
-  };
-
-  await mkdir(config.runtimeRoot, { recursive: true });
-  const logHandle = await openControllerLog(config);
-  let controllerPid: number | null = null;
+async function spawnNextjsRuntime(config: ToolDevConfig, options: CliOptions): Promise<{ pid: number; runtimeToken: string }> {
+  const { args: stampArgs, env, runtimeToken } = createAppStamp(config, APP_KEYS.NEXTJS);
+  const nextjsPort = parsePortOption(options.nextjsPort ?? process.env.OD_NEXTJS_PORT, "--nextjs-port");
+  const logHandle = await openAppLog(config, APP_KEYS.NEXTJS);
 
   try {
-    const controllerStamp = {
-      appKey: APP_KEYS.CONTROLLER,
-      controllerIpcPath: config.controllerIpcPath,
-      mode: "dev",
-      namespace: config.namespace,
-      runtimeToken: config.runtimeToken,
-    };
-    const env = createStampedLaunchEnv({
-      controllerIpcPath: config.controllerIpcPath,
-      extraEnv: process.env,
-      runtimeToken: config.runtimeToken,
-      sidecarBase: config.toolsDevRoot,
-    });
     const spawned = await spawnBackgroundProcess({
-      args: [
-        ...config.apps.controller.args,
-        "--workspace-root",
-        config.workspaceRoot,
-        "--tools-dev-root",
-        config.toolsDevRoot,
-        "--runtime-root",
-        config.runtimeRoot,
-        "--manifest",
-        config.manifestPath,
-        "--pointer",
-        config.pointerPath,
-        "--namespace",
-        config.namespace,
-        "--runtime-token",
-        config.runtimeToken,
-        "--controller-ipc",
-        config.controllerIpcPath,
-        "--controller-log",
-        config.apps.controller.logPath,
-        "--daemon-log",
-        config.apps.daemon.logPath,
-        "--web-log",
-        config.apps.web.logPath,
-        "--web-runner-entry",
-        config.apps.web.entryPath,
-        "--web-runner-command",
-        config.apps.web.command,
-        "--web-runner-args",
-        JSON.stringify(config.apps.web.args),
-        "--daemon-port",
-        String(portPlan.daemon.port),
-        "--web-port",
-        String(portPlan.web.port),
-        "--host",
-        portPlan.host,
-        ...createStampedProcessArgs({
-          origin: { namespace: config.namespace, role: "dev-controller", source: "tools-dev" },
-          stamp: controllerStamp,
-        }),
-      ],
-      command: config.apps.controller.command,
+      args: [config.tsxCliPath, config.apps.nextjs.sidecarEntryPath, ...stampArgs],
+      command: process.execPath,
       cwd: config.workspaceRoot,
       detached: true,
-      env,
+      env: {
+        ...process.env,
+        ...env,
+        ...(nextjsPort == null ? {} : { OD_NEXTJS_PORT: String(nextjsPort) }),
+      },
       logFd: logHandle.fd,
     });
-    controllerPid = spawned.pid;
+    return { pid: spawned.pid, runtimeToken };
   } finally {
     await logHandle.close();
   }
+}
 
-  const manifest = createInitialManifest({ config, controllerPid, portPlan });
-  await writeJsonFile(config.manifestPath, manifest);
-  await writeJsonFile(config.pointerPath, pointer);
+async function buildDesktop(config: ToolDevConfig, logHandle: FileHandle): Promise<void> {
+  await logHandle.write(`\n[tools-dev] building @open-design/desktop at ${new Date().toISOString()}\n`);
+  const invocation = createPackageManagerInvocation(["--filter", "@open-design/desktop", "build"], process.env);
+  await runLoggedCommand({
+    args: invocation.args,
+    command: invocation.command,
+    cwd: config.workspaceRoot,
+    env: process.env,
+    logFd: logHandle.fd,
+  });
+}
+
+async function spawnDesktopRuntime(config: ToolDevConfig): Promise<{ pid: number; runtimeToken: string }> {
+  const { args: stampArgs, env, runtimeToken } = createAppStamp(config, APP_KEYS.DESKTOP);
+  const logHandle = await openAppLog(config, APP_KEYS.DESKTOP);
 
   try {
-    const currentStatus: any = await waitForControllerReady(pointer);
+    await buildDesktop(config, logHandle);
+    await logHandle.write(`[tools-dev] launching desktop at ${new Date().toISOString()}\n`);
+    const spawned = await spawnBackgroundProcess({
+      args: [config.apps.desktop.mainEntryPath, ...stampArgs],
+      command: config.apps.desktop.electronBinaryPath,
+      cwd: config.workspaceRoot,
+      detached: true,
+      env: {
+        ...process.env,
+        ...env,
+      },
+      logFd: logHandle.fd,
+    });
+    return { pid: spawned.pid, runtimeToken };
+  } finally {
+    await logHandle.close();
+  }
+}
+
+async function startNextjs(config: ToolDevConfig, options: CliOptions) {
+  const existing = await inspectNextjsRuntime(runtimeLookup(config));
+  if (existing?.url != null) {
+    return { app: APP_KEYS.NEXTJS, created: false, logPath: config.apps.nextjs.latestLogPath, status: existing };
+  }
+  await assertNoStaleActiveProcess(config, APP_KEYS.NEXTJS);
+
+  const spawned = await spawnNextjsRuntime(config, options);
+  try {
+    const status = await waitForNextjsRuntime(runtimeLookup(config));
     return {
+      app: APP_KEYS.NEXTJS,
       created: true,
-      logPath: config.apps.controller.logPath,
-      namespace: config.namespace,
-      ports: currentStatus.ports,
-      runtimeRoot: config.runtimeRoot,
-      runtimeToken: config.runtimeToken,
-      status: currentStatus.status,
-      urls: currentStatus.urls,
+      logPath: config.apps.nextjs.latestLogPath,
+      pid: spawned.pid,
+      runtimeToken: spawned.runtimeToken,
+      status,
     };
   } catch (error) {
-    await stop({ ...options, json: true }).catch(() => {});
+    await stopApp(config, APP_KEYS.NEXTJS).catch(() => undefined);
     throw error;
   }
 }
 
-async function status(options: CliOptions) {
-  const runtime: any = await readCurrentRuntime(options);
-  if (runtime.state === "missing") {
-    return { namespace: runtime.base.namespace, status: "not-running" };
+async function startDesktop(config: ToolDevConfig) {
+  const existing = await inspectDesktopRuntime(runtimeLookup(config));
+  if (existing != null) {
+    return { app: APP_KEYS.DESKTOP, created: false, logPath: config.apps.desktop.latestLogPath, status: existing };
   }
-  if (runtime.state === "running") return runtime.status;
+  await assertNoStaleActiveProcess(config, APP_KEYS.DESKTOP);
 
+  const spawned = await spawnDesktopRuntime(config);
+  try {
+    const status = await waitForDesktopRuntime(runtimeLookup(config));
+    return {
+      app: APP_KEYS.DESKTOP,
+      created: true,
+      logPath: config.apps.desktop.latestLogPath,
+      pid: spawned.pid,
+      runtimeToken: spawned.runtimeToken,
+      status,
+    };
+  } catch (error) {
+    await stopApp(config, APP_KEYS.DESKTOP).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function startApp(config: ToolDevConfig, appName: ToolDevAppName, options: CliOptions) {
+  return appName === APP_KEYS.NEXTJS ? await startNextjs(config, options) : await startDesktop(config);
+}
+
+async function requestAppShutdown(config: ToolDevConfig, appName: ToolDevAppName): Promise<boolean> {
+  try {
+    await requestJsonIpc(appConfig(config, appName).ipcPath, { type: "shutdown" }, { timeoutMs: 1500 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stoppedByGracefulResult(matchedPids: number[]): StopProcessesResult {
   return {
-    activeProcesses: runtime.activeProcesses?.map(({ command, pid, ppid }: any) => ({ command, pid, ppid })) ?? [],
-    error: runtime.error,
-    manifest: runtime.manifest,
-    namespace: runtime.manifest?.namespace ?? runtime.base.namespace,
-    status: runtime.state,
+    alreadyStopped: matchedPids.length === 0,
+    forcedPids: [],
+    matchedPids,
+    remainingPids: [],
+    stoppedPids: matchedPids,
   };
 }
 
-async function fallbackStop(runtime: any) {
-  if (!runtime.manifest) {
-    if (runtime.base?.pointerPath) await removeFile(runtime.base.pointerPath);
-    return { via: "fallback", stop: { alreadyStopped: true, forcedPids: [], matchedPids: [], remainingPids: [], stoppedPids: [] } };
-  }
+async function stopApp(config: ToolDevConfig, appName: ToolDevAppName) {
+  const before = await findAppProcessTree(config, appName);
+  const gracefulRequested = await requestAppShutdown(config, appName);
+  const remainingAfterGraceful = gracefulRequested
+    ? await waitForAppProcessExit(config, appName)
+    : before.pids;
 
-  const processes = await listProcessSnapshots();
-  const rootPids = processes
-    .filter((processInfo: any) =>
-      matchesStampedProcess(processInfo, {
-        namespace: runtime.manifest.namespace,
-        runtimeToken: runtime.manifest.runtimeToken,
-        source: "tools-dev",
-      }),
-    )
-    .map((processInfo: any) => processInfo.pid);
-  const pids = collectProcessTreePids(processes, rootPids);
-  const stopResult = await stopProcesses(pids);
-  if (runtime.base?.pointerPath) await removeFile(runtime.base.pointerPath);
-  return { matchedRootPids: rootPids, via: "fallback", stop: stopResult };
-}
-
-async function stop(options: CliOptions) {
-  const runtime: any = await readCurrentRuntime(options);
-  if (runtime.state === "missing") {
-    return { namespace: runtime.base.namespace, status: "not-running" };
-  }
-  if (runtime.state !== "running") {
-    return await fallbackStop(runtime);
-  }
-
-  const before: any = await requestJsonIpc(runtime.pointer.controllerIpcPath, { type: "shutdown" }, { timeoutMs: 2000 });
-  const controllerPid = before.controller?.pid ?? before.apps?.controller?.pid;
-  if (controllerPid && isProcessAlive(controllerPid)) await waitForProcessExit(controllerPid, 7000);
-  await removeFile(runtime.base.pointerPath);
-  return {
-    namespace: before.namespace,
-    status: "stopped",
-    via: "controller",
-  };
-}
-
-async function restart(options: CliOptions) {
-  const stopped = await stop(options);
-  const started = await start(options);
-  return { started, stopped };
-}
-
-async function logs(app: string | undefined, options: CliOptions) {
-  const targetApp = app ?? "all";
-  const current: any = await status({ ...options, json: true });
-  const manifest = current.schemaVersion ? current : current.manifest;
-  if (!manifest?.apps) return { app: targetApp, lines: [], logPath: null, status: current.status };
-
-  const apps = targetApp === "all" ? ["controller", "daemon", "web"] : [targetApp];
-  const result: Record<string, { lines: string[]; logPath: string | null }> = {};
-  for (const name of apps) {
-    const logPath = manifest.apps[name]?.logPath;
-    result[name] = {
-      lines: logPath ? await readLogTail(logPath, 120) : [],
-      logPath: logPath ?? null,
+  if (remainingAfterGraceful.length === 0) {
+    return {
+      app: appName,
+      status: before.pids.length === 0 ? "not-running" : "stopped",
+      stop: stoppedByGracefulResult(before.pids),
+      via: gracefulRequested ? "ipc" : "process-scan",
     };
   }
-  return result;
+
+  const stop = await stopProcesses(remainingAfterGraceful);
+  return {
+    app: appName,
+    status: stop.remainingPids.length === 0 ? "stopped" : "partial",
+    stop,
+    via: gracefulRequested ? "ipc+fallback" : "fallback",
+  };
 }
 
-function printStartResult(result: any, options: CliOptions) {
-  if (options.json === true) return output(result, options);
-  process.stdout.write(`[tools-dev] started namespace "${result.namespace}"\n`);
-  process.stdout.write(`  web:    ${result.urls.web}\n`);
-  process.stdout.write(`  daemon: ${result.urls.daemon}\n`);
-  process.stdout.write(`  root:   ${result.runtimeRoot}\n`);
+async function inspectAppStatus(config: ToolDevConfig, appName: ToolDevAppName) {
+  if (appName === APP_KEYS.NEXTJS) {
+    const status = await inspectNextjsRuntime(runtimeLookup(config));
+    if (status != null) return status;
+    const active = await findAppProcessTree(config, appName);
+    return { pid: active.rootPids[0] ?? null, state: active.pids.length > 0 ? "starting" : "idle", url: null };
+  }
+
+  const status = await inspectDesktopRuntime(runtimeLookup(config));
+  if (status != null) return status;
+  const active = await findAppProcessTree(config, appName);
+  return { pid: active.rootPids[0] ?? null, state: active.pids.length > 0 ? "unknown" : "idle", url: null };
+}
+
+function summarizeStatus(apps: Record<ToolDevAppName, any>): string {
+  const states = Object.values(apps).map((entry) => entry?.state);
+  if (states.every((state) => state === "idle")) return "not-running";
+  if (states.every((state) => state === "running")) return "running";
+  return "partial";
+}
+
+async function status(config: ToolDevConfig, appName: string | undefined) {
+  const targets = resolveTargetApps(appName, DEFAULT_START_APPS);
+  if (targets.length === 1) return await inspectAppStatus(config, targets[0]);
+
+  const apps = Object.fromEntries(
+    await Promise.all(targets.map(async (target) => [target, await inspectAppStatus(config, target)] as const)),
+  ) as Record<ToolDevAppName, unknown>;
+  return { apps, namespace: config.namespace, status: summarizeStatus(apps) };
+}
+
+async function restartApp(config: ToolDevConfig, appName: ToolDevAppName, options: CliOptions) {
+  const stopped = await stopApp(config, appName);
+  const started = await startApp(config, appName, options);
+  return { app: appName, started, stopped };
+}
+
+async function readLogs(config: ToolDevConfig, appName: ToolDevAppName) {
+  const logPath = appConfig(config, appName).latestLogPath;
+  return { app: appName, lines: await readLogTail(logPath, 200), logPath };
+}
+
+type LogResult = Awaited<ReturnType<typeof readLogs>>;
+
+function isLogResult(value: LogResult | Record<string, LogResult>): value is LogResult {
+  return Array.isArray((value as LogResult).lines);
+}
+
+function printLogs(result: LogResult | Record<string, LogResult>, options: CliOptions) {
+  if (options.json === true) {
+    printJson(result);
+    return;
+  }
+
+  const entries: Array<[string, LogResult]> = isLogResult(result) ? [[result.app, result]] : Object.entries(result);
+  for (const [appName, entry] of entries) {
+    process.stdout.write(`[${appName}] ${entry.logPath}\n`);
+    process.stdout.write(entry.lines.length > 0 ? `${entry.lines.join("\n")}\n` : "(no log lines)\n");
+  }
+}
+
+function parseTimeoutMs(value: string | undefined): number | undefined {
+  if (value == null) return undefined;
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("--timeout must be a positive number of seconds");
+  return seconds * 1000;
+}
+
+async function inspectDesktop(config: ToolDevConfig, target: string | undefined, options: CliOptions) {
+  const operation = target ?? "status";
+  const timeoutMs = parseTimeoutMs(options.timeout) ?? 30000;
+
+  switch (operation) {
+    case "status":
+      return (await inspectDesktopRuntime(runtimeLookup(config), 1000)) ?? ({ state: "idle" } satisfies DesktopStatusSnapshot);
+    case "eval":
+      if (options.expr == null) throw new Error("--expr is required for desktop eval");
+      return await requestJsonIpc<DesktopEvalResult>(
+        config.apps.desktop.ipcPath,
+        { input: { expression: options.expr }, type: "eval" },
+        { timeoutMs },
+      );
+    case "screenshot":
+      if (options.path == null) throw new Error("--path is required for desktop screenshot");
+      return await requestJsonIpc<DesktopScreenshotResult>(
+        config.apps.desktop.ipcPath,
+        { input: { path: options.path }, type: "screenshot" },
+        { timeoutMs },
+      );
+    case "console":
+      return await requestJsonIpc<DesktopConsoleResult>(config.apps.desktop.ipcPath, { type: "console" }, { timeoutMs });
+    case "click":
+      if (options.selector == null) throw new Error("--selector is required for desktop click");
+      return await requestJsonIpc<DesktopClickResult>(
+        config.apps.desktop.ipcPath,
+        { input: { selector: options.selector }, type: "click" },
+        { timeoutMs },
+      );
+    default:
+      throw new Error(`unsupported desktop inspect target: ${operation}`);
+  }
+}
+
+async function inspect(config: ToolDevConfig, appName: string, target: string | undefined, options: CliOptions) {
+  if (appName === APP_KEYS.NEXTJS) {
+    if (target != null && target !== "status") throw new Error(`unsupported nextjs inspect target: ${target}`);
+    return (await inspectNextjsRuntime(runtimeLookup(config), 1000)) ?? ({ state: "idle", url: null } satisfies NextjsStatusSnapshot);
+  }
+  if (appName !== APP_KEYS.DESKTOP) throw new Error(`unsupported tools-dev app: ${appName}`);
+  return await inspectDesktop(config, target, options);
+}
+
+async function runSequential<T>(targets: readonly ToolDevAppName[], operation: (target: ToolDevAppName) => Promise<T>) {
+  const result: Partial<Record<ToolDevAppName, T>> = {};
+  for (const target of targets) result[target] = await operation(target);
+  return result;
 }
 
 const cli = cac("tools-dev");
@@ -404,37 +467,69 @@ function addSharedOptions(command: ReturnType<typeof cli.command>) {
     .option("--json", "print JSON");
 }
 
-addSharedOptions(cli.command("start", "Start the background dev controller, daemon, and web app"))
-  .option("--daemon-port <port>", "force daemon port; conflict quick-fails")
-  .option("--web-port <port>", "force web port; conflict quick-fails")
-  .action(async (options: CliOptions) => {
-    printStartResult(await start(options), options);
+addSharedOptions(cli.command("start [app]", "Start nextjs, desktop, or both when app is omitted"))
+  .option("--nextjs-port <port>", "force Next.js port; conflict quick-fails")
+  .action(async (appName: string | undefined, options: CliOptions) => {
+    const config = resolveToolDevConfig(options);
+    const targets = resolveTargetApps(appName, DEFAULT_START_APPS);
+    const result = targets.length === 1
+      ? await startApp(config, targets[0], options)
+      : await runSequential(targets, (target) => startApp(config, target, options));
+    output(result, options);
   });
 
-addSharedOptions(cli.command("status", "Show current namespace status")).action(async (options: CliOptions) => {
-  output(await status(options), options);
-});
-
-addSharedOptions(cli.command("inspect", "Show detailed current namespace status")).action(async (options: CliOptions) => {
-  output(await status(options), options);
-});
-
-addSharedOptions(cli.command("stop", "Stop the current namespace")).action(async (options: CliOptions) => {
-  output(await stop(options), options);
-});
-
-addSharedOptions(cli.command("restart", "Stop and start the current namespace"))
-  .option("--daemon-port <port>", "force daemon port; conflict quick-fails")
-  .option("--web-port <port>", "force web port; conflict quick-fails")
-  .action(async (options: CliOptions) => {
-    output(await restart(options), options);
-  });
-
-addSharedOptions(cli.command("logs [app]", "Show log tail for controller, daemon, web, or all apps")).action(
-  async (app: string | undefined, options: CliOptions) => {
-    output(await logs(app, options), options);
+addSharedOptions(cli.command("status [app]", "Show app status for nextjs, desktop, or both")).action(
+  async (appName: string | undefined, options: CliOptions) => {
+    output(await status(resolveToolDevConfig(options), appName), options);
   },
 );
+
+addSharedOptions(cli.command("stop [app]", "Stop desktop, nextjs, or both when app is omitted")).action(
+  async (appName: string | undefined, options: CliOptions) => {
+    const config = resolveToolDevConfig(options);
+    const targets = resolveTargetApps(appName, DEFAULT_STOP_APPS);
+    const result = targets.length === 1
+      ? await stopApp(config, targets[0])
+      : await runSequential(targets, (target) => stopApp(config, target));
+    output(result, options);
+  },
+);
+
+addSharedOptions(cli.command("restart [app]", "Restart nextjs, desktop, or both when app is omitted"))
+  .option("--nextjs-port <port>", "force Next.js port; conflict quick-fails")
+  .action(async (appName: string | undefined, options: CliOptions) => {
+    const config = resolveToolDevConfig(options);
+    const targets = resolveTargetApps(appName, DEFAULT_STOP_APPS);
+    const result = targets.length === 1
+      ? await restartApp(config, targets[0], options)
+      : {
+          stop: await runSequential(DEFAULT_STOP_APPS, (target) => stopApp(config, target)),
+          start: await runSequential(DEFAULT_START_APPS, (target) => startApp(config, target, options)),
+        };
+    output(result, options);
+  });
+
+addSharedOptions(cli.command("logs [app]", "Show log tail for nextjs, desktop, or both")).action(
+  async (appName: string | undefined, options: CliOptions) => {
+    const config = resolveToolDevConfig(options);
+    const targets = resolveTargetApps(appName, DEFAULT_START_APPS);
+    const result = targets.length === 1
+      ? await readLogs(config, targets[0])
+      : Object.fromEntries(await Promise.all(targets.map(async (target) => [target, await readLogs(config, target)] as const)));
+    printLogs(result, options);
+  },
+);
+
+addSharedOptions(
+  cli.command("inspect <app> [target]", "Inspect nextjs status or desktop status/eval/screenshot/console/click"),
+)
+  .option("--expr <js>", "JavaScript expression for desktop eval")
+  .option("--path <file>", "Output path for desktop screenshot")
+  .option("--selector <css>", "CSS selector for desktop click")
+  .option("--timeout <seconds>", "Desktop inspect timeout in seconds")
+  .action(async (appName: string, target: string | undefined, options: CliOptions) => {
+    output(await inspect(resolveToolDevConfig(options), appName, target, options), options);
+  });
 
 cli.help();
 

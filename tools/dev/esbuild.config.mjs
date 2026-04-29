@@ -6,7 +6,7 @@ await build({
   },
   bundle: true,
   entryNames: "[name]",
-  entryPoints: ["./src/index.ts", "./src/controller.ts", "./src/web-runner.ts"],
+  entryPoints: ["./src/index.ts"],
   format: "esm",
   outdir: "./dist",
   outExtension: {

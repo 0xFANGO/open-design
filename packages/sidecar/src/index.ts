@@ -5,18 +5,76 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 export const APP_KEYS = Object.freeze({
-  CONTROLLER: "controller",
-  DAEMON: "daemon",
-  WEB: "web",
+  DESKTOP: "desktop",
+  NEXTJS: "nextjs",
 });
 
 export type AppKey = (typeof APP_KEYS)[keyof typeof APP_KEYS];
+export type SidecarMode = "dev" | "runtime";
+
+export type NextjsRuntimeState = "idle" | "running" | "starting" | "stopped" | "unknown";
+
+export type NextjsStatusSnapshot = {
+  pid?: number;
+  state: NextjsRuntimeState;
+  updatedAt?: string;
+  url: string | null;
+};
+
+export type DesktopRuntimeState = "idle" | "running" | "unknown";
+
+export type DesktopStatusSnapshot = {
+  pid?: number;
+  state: DesktopRuntimeState;
+  title?: string | null;
+  updatedAt?: string;
+  url?: string | null;
+  windowVisible?: boolean;
+};
+
+export type DesktopEvalInput = {
+  expression: string;
+};
+
+export type DesktopEvalResult = {
+  error?: string;
+  ok: boolean;
+  value?: unknown;
+};
+
+export type DesktopScreenshotInput = {
+  path: string;
+};
+
+export type DesktopScreenshotResult = {
+  path: string;
+};
+
+export type DesktopConsoleEntry = {
+  level: string;
+  text: string;
+  timestamp: string;
+};
+
+export type DesktopConsoleResult = {
+  entries: DesktopConsoleEntry[];
+};
+
+export type DesktopClickInput = {
+  selector: string;
+};
+
+export type DesktopClickResult = {
+  clicked: boolean;
+  found: boolean;
+};
 
 export const SIDECAR_BASE_ENV = "OD_SIDECAR_BASE";
 export const SIDECAR_NAMESPACE_ENV = "OD_SIDECAR_NAMESPACE";
 export const NAMESPACE_PREFIX_ENV = "OD_NAMESPACE_PREFIX";
 export const SIDECAR_CONTROLLER_IPC_PATH_ENV = "OD_SIDECAR_CONTROLLER_IPC_PATH";
 export const SIDECAR_IPC_BASE_ENV = "OD_SIDECAR_IPC_BASE";
+export const SIDECAR_IPC_PATH_ENV = "OD_SIDECAR_IPC_PATH";
 export const SIDECAR_RUNTIME_TOKEN_ENV = "OD_SIDECAR_RUNTIME_TOKEN";
 
 export const STAMP_APP_FLAG = "--od-stamp-app";
@@ -52,21 +110,35 @@ export type RuntimeRootRequest = RuntimePathRequest & {
   runtimeToken: string;
 };
 
-export type ControllerIpcPathRequest = RuntimeRootRequest & {
-  appKey?: string;
+export type AppIpcPathRequest = RuntimePathRequest & {
+  appKey: string;
   env?: NodeJS.ProcessEnv;
+};
+
+export type ControllerIpcPathRequest = AppIpcPathRequest & {
+  runtimeToken?: string;
+};
+
+export type SidecarRuntimeContext = {
+  appKey: string;
+  base: string;
+  ipcPath: string;
+  mode: SidecarMode;
+  namespace: string;
+  runtimeToken: string | null;
 };
 
 export type SidecarStamp = {
   appKey: string;
   controllerIpcPath: string;
-  mode: string;
+  mode: SidecarMode;
   namespace: string;
-  runtimeToken: string;
+  runtimeToken: string | null;
 };
 
-export type SidecarStampInput = Omit<SidecarStamp, "mode"> & {
-  mode?: string;
+export type SidecarStampInput = Omit<SidecarStamp, "mode" | "runtimeToken"> & {
+  mode?: SidecarMode;
+  runtimeToken?: string | null;
 };
 
 export type ProcessOrigin = {
@@ -81,9 +153,10 @@ export type StampedProcessArgsRequest = {
 };
 
 export type StampedLaunchEnvRequest = {
-  controllerIpcPath: string;
+  controllerIpcPath?: string;
   extraEnv?: NodeJS.ProcessEnv;
-  runtimeToken: string;
+  namespace?: string;
+  runtimeToken?: string | null;
   sidecarBase: string;
 };
 
@@ -106,15 +179,13 @@ export type PortAllocation = {
 };
 
 export type DevPortPlan = {
-  daemon: PortAllocation;
   host: string;
-  web: PortAllocation;
+  nextjs: PortAllocation;
 };
 
 export type DevPortRequest = {
-  daemonPort?: number | string | null;
   host?: string;
-  webPort?: number | string | null;
+  nextjsPort?: number | string | null;
 };
 
 export type JsonIpcHandler = (message: any) => unknown | Promise<unknown>;
@@ -128,6 +199,10 @@ function normalizeNamespace(namespace: unknown): string {
   if (value.length === 0) throw new Error("namespace must not be empty");
   if (/[\\/]/.test(value)) throw new Error(`namespace must not contain path separators: ${value}`);
   return value;
+}
+
+function isSidecarMode(value: string): value is SidecarMode {
+  return value === "dev" || value === "runtime";
 }
 
 export function resolveNamespace(options: NamespaceResolutionOptions = {}): string {
@@ -179,9 +254,9 @@ export function isWindowsNamedPipePath(value: unknown): boolean {
   return typeof value === "string" && value.startsWith("\\\\.\\pipe\\");
 }
 
-export function resolveControllerIpcPath({ appKey = "tools-dev", base, env = process.env, namespace, runtimeToken }: ControllerIpcPathRequest): string {
+export function resolveAppIpcPath({ appKey, base, env = process.env, namespace }: AppIpcPathRequest): string {
   const hash = createHash("sha256")
-    .update(JSON.stringify({ appKey, base: resolveToolsDevBase({ base }), namespace, runtimeToken }))
+    .update(JSON.stringify({ appKey, base: resolveToolsDevBase({ base }), kind: "app-ipc", namespace }))
     .digest("hex")
     .slice(0, SHORT_IPC_HASH_LENGTH);
 
@@ -195,13 +270,17 @@ export function resolveControllerIpcPath({ appKey = "tools-dev", base, env = pro
   return join(ipcBase, appKey, `${hash}.sock`);
 }
 
+export function resolveControllerIpcPath(options: ControllerIpcPathRequest): string {
+  return resolveAppIpcPath(options);
+}
+
 export function createSidecarStampArgs({ appKey, controllerIpcPath, mode = "dev", namespace, runtimeToken }: SidecarStampInput): string[] {
   return [
     `${STAMP_APP_FLAG}=${appKey}`,
     `${STAMP_MODE_FLAG}=${mode}`,
     `${STAMP_NAMESPACE_FLAG}=${namespace}`,
     `${STAMP_CONTROLLER_IPC_FLAG}=${controllerIpcPath}`,
-    `${STAMP_RUNTIME_TOKEN_FLAG}=${runtimeToken}`,
+    ...(runtimeToken == null ? [] : [`${STAMP_RUNTIME_TOKEN_FLAG}=${runtimeToken}`]),
   ];
 }
 
@@ -220,12 +299,13 @@ export function createStampedProcessArgs({ origin, stamp }: StampedProcessArgsRe
   ];
 }
 
-export function createStampedLaunchEnv({ controllerIpcPath, extraEnv = process.env, sidecarBase, runtimeToken }: StampedLaunchEnvRequest): NodeJS.ProcessEnv {
+export function createStampedLaunchEnv({ controllerIpcPath, extraEnv = process.env, namespace, runtimeToken, sidecarBase }: StampedLaunchEnvRequest): NodeJS.ProcessEnv {
   return {
     ...extraEnv,
     [SIDECAR_BASE_ENV]: sidecarBase,
-    [SIDECAR_CONTROLLER_IPC_PATH_ENV]: controllerIpcPath,
-    [SIDECAR_RUNTIME_TOKEN_ENV]: runtimeToken,
+    ...(controllerIpcPath == null ? {} : { [SIDECAR_CONTROLLER_IPC_PATH_ENV]: controllerIpcPath }),
+    ...(namespace == null ? {} : { [SIDECAR_NAMESPACE_ENV]: namespace }),
+    ...(runtimeToken == null ? {} : { [SIDECAR_RUNTIME_TOKEN_ENV]: runtimeToken }),
   };
 }
 
@@ -247,8 +327,36 @@ export function readSidecarStamp(args: readonly string[]): SidecarStamp | null {
   const namespace = readFlagValue(args, STAMP_NAMESPACE_FLAG);
   const controllerIpcPath = readFlagValue(args, STAMP_CONTROLLER_IPC_FLAG);
   const runtimeToken = readFlagValue(args, STAMP_RUNTIME_TOKEN_FLAG);
-  if (!appKey || !mode || !namespace || !controllerIpcPath || !runtimeToken) return null;
+  if (!appKey || !mode || !namespace || !controllerIpcPath || !isSidecarMode(mode)) return null;
   return { appKey, controllerIpcPath, mode, namespace, runtimeToken };
+}
+
+export function bootstrapSidecarRuntime(args: readonly string[], env: NodeJS.ProcessEnv, options: { appKey: string }): SidecarRuntimeContext {
+  const stamp = readSidecarStamp(args);
+  if (stamp == null) throw new Error("sidecar stamp is required");
+  if (stamp.appKey !== options.appKey) {
+    throw new Error(`sidecar stamp app mismatch: expected ${options.appKey}, received ${stamp.appKey}`);
+  }
+
+  const base = resolveToolsDevBase({ env });
+  const ipcPath = resolveAppIpcPath({ appKey: stamp.appKey, base, env, namespace: stamp.namespace });
+  if (stamp.controllerIpcPath !== ipcPath) {
+    throw new Error(`sidecar ipc path mismatch: expected ${ipcPath}, received ${stamp.controllerIpcPath}`);
+  }
+
+  env[SIDECAR_CONTROLLER_IPC_PATH_ENV] = stamp.controllerIpcPath;
+  env[SIDECAR_IPC_PATH_ENV] = ipcPath;
+  env[SIDECAR_NAMESPACE_ENV] = stamp.namespace;
+  if (stamp.runtimeToken != null) env[SIDECAR_RUNTIME_TOKEN_ENV] = stamp.runtimeToken;
+
+  return {
+    appKey: stamp.appKey,
+    base,
+    ipcPath,
+    mode: stamp.mode,
+    namespace: stamp.namespace,
+    runtimeToken: stamp.runtimeToken,
+  };
 }
 
 function escapeRegExp(value: string): string {
@@ -276,6 +384,7 @@ export function matchesStampedProcess(processInfo: ProcessCommandSnapshot, crite
 }
 
 async function closeServer(server: Server): Promise<void> {
+  if (!server.listening) return;
   await new Promise<void>((resolveClose, rejectClose) => {
     server.close((error) => (error == null ? resolveClose() : rejectClose(error)));
   });
@@ -344,18 +453,14 @@ async function allocateDynamicPort(label: string, host: string, reserved: Set<nu
   throw new Error(`failed to allocate dynamic ${label} port without conflict`);
 }
 
-export async function allocateDevPorts({ daemonPort, host = DEFAULT_HOST, webPort }: DevPortRequest = {}): Promise<DevPortPlan> {
+export async function allocateDevPorts({ host = DEFAULT_HOST, nextjsPort }: DevPortRequest = {}): Promise<DevPortPlan> {
   const reserved = new Set<number>();
-  const forcedDaemon = parsePort(daemonPort, "daemon");
-  const forcedWeb = parsePort(webPort, "web");
+  const forcedNextjs = parsePort(nextjsPort, "nextjs");
   return {
-    daemon: forcedDaemon == null
-      ? await allocateDynamicPort("daemon", host, reserved)
-      : await allocateForcedPort(forcedDaemon, "daemon", host, reserved),
     host,
-    web: forcedWeb == null
-      ? await allocateDynamicPort("web", host, reserved)
-      : await allocateForcedPort(forcedWeb, "web", host, reserved),
+    nextjs: forcedNextjs == null
+      ? await allocateDynamicPort("nextjs", host, reserved)
+      : await allocateForcedPort(forcedNextjs, "nextjs", host, reserved),
   };
 }
 
@@ -398,6 +503,7 @@ export async function createJsonIpcServer({ handler, socketPath }: { handler: Js
       const newlineIndex = buffer.indexOf("\n");
       if (newlineIndex < 0) return;
       const frame = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
       try {
         const result = await handler(JSON.parse(frame));
         socket.end(`${JSON.stringify({ ok: true, result })}\n`);
@@ -431,10 +537,17 @@ export async function createJsonIpcServer({ handler, socketPath }: { handler: Js
 export async function requestJsonIpc<T = any>(socketPath: string, payload: unknown, { timeoutMs = 1500 }: { timeoutMs?: number } = {}): Promise<T> {
   return await new Promise<T>((resolveRequest, rejectRequest) => {
     const socket = createConnection(socketPath);
+    let settled = false;
     let buffer = "";
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    };
     const timeout = setTimeout(() => {
       socket.destroy();
-      rejectRequest(new Error(`IPC request timed out: ${socketPath}`));
+      settle(() => rejectRequest(new Error(`IPC request timed out: ${socketPath}`)));
     }, timeoutMs);
 
     socket.on("connect", () => {
@@ -444,42 +557,96 @@ export async function requestJsonIpc<T = any>(socketPath: string, payload: unkno
       buffer += chunk.toString();
       const newlineIndex = buffer.indexOf("\n");
       if (newlineIndex < 0) return;
-      clearTimeout(timeout);
       socket.end();
-      const response = JSON.parse(buffer.slice(0, newlineIndex)) as { error?: { message?: string }; ok: boolean; result?: T };
-      if (!response.ok) {
-        rejectRequest(new Error(response.error?.message ?? "IPC request failed"));
-        return;
-      }
-      resolveRequest(response.result as T);
+      settle(() => {
+        const response = JSON.parse(buffer.slice(0, newlineIndex)) as { error?: { message?: string }; ok: boolean; result?: T };
+        if (!response.ok) {
+          rejectRequest(new Error(response.error?.message ?? "IPC request failed"));
+          return;
+        }
+        resolveRequest(response.result as T);
+      });
     });
     socket.on("error", (error) => {
-      clearTimeout(timeout);
-      rejectRequest(error);
+      settle(() => rejectRequest(error));
     });
   });
+}
+
+export type AppRuntimeLookup = Pick<SidecarRuntimeContext, "base" | "namespace">;
+
+export function resolveNextjsIpcPath(runtime: AppRuntimeLookup): string {
+  return resolveAppIpcPath({ appKey: APP_KEYS.NEXTJS, base: runtime.base, namespace: runtime.namespace });
+}
+
+export function resolveDesktopIpcPath(runtime: AppRuntimeLookup): string {
+  return resolveAppIpcPath({ appKey: APP_KEYS.DESKTOP, base: runtime.base, namespace: runtime.namespace });
+}
+
+export async function inspectNextjsRuntime(runtime: AppRuntimeLookup, timeoutMs = 800): Promise<NextjsStatusSnapshot | null> {
+  try {
+    return await requestJsonIpc<NextjsStatusSnapshot>(resolveNextjsIpcPath(runtime), { type: "status" }, { timeoutMs });
+  } catch {
+    return null;
+  }
+}
+
+export async function waitForNextjsRuntime(runtime: AppRuntimeLookup, timeoutMs = 35000): Promise<NextjsStatusSnapshot> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const snapshot = await inspectNextjsRuntime(runtime, 800);
+    if (snapshot?.url != null) return snapshot;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+  }
+  throw new Error("nextjs did not expose status in time");
+}
+
+export async function inspectDesktopRuntime(runtime: AppRuntimeLookup, timeoutMs = 800): Promise<DesktopStatusSnapshot | null> {
+  try {
+    return await requestJsonIpc<DesktopStatusSnapshot>(resolveDesktopIpcPath(runtime), { type: "status" }, { timeoutMs });
+  } catch {
+    return null;
+  }
+}
+
+export async function waitForDesktopRuntime(runtime: AppRuntimeLookup, timeoutMs = 15000): Promise<DesktopStatusSnapshot> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const snapshot = await inspectDesktopRuntime(runtime, 800);
+    if (snapshot != null) return snapshot;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+  }
+  throw new Error("desktop did not expose status in time");
 }
 
 export const sidecar = Object.freeze({
   allocateDevPorts,
   appKeys: APP_KEYS,
+  bootstrap: bootstrapSidecarRuntime,
   createRuntimeToken,
   createStampedLaunchEnv,
   createStampedProcessArgs,
   createJsonIpcServer,
+  inspectDesktopRuntime,
+  inspectNextjsRuntime,
   matchesStampedProcess,
   readJsonFile,
   removeFile,
   removePointerIfCurrent,
   requestJsonIpc,
+  resolveAppIpcPath,
   resolveControllerIpcPath,
+  resolveDesktopIpcPath,
   resolveLogFilePath,
   resolveLogsDir,
   resolveManifestPath,
   resolveNamespace,
   resolveNamespaceRoot,
+  resolveNextjsIpcPath,
   resolvePointerPath,
   resolveRuntimeRoot,
   resolveToolsDevBase,
+  waitForDesktopRuntime,
+  waitForNextjsRuntime,
   writeJsonFile,
 });

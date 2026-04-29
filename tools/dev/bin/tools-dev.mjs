@@ -6,11 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const entryDir = dirname(fileURLToPath(import.meta.url));
 const distEntry = resolve(entryDir, '../dist/index.mjs');
-const requiredDistEntries = [
-  distEntry,
-  resolve(entryDir, '../dist/controller.mjs'),
-  resolve(entryDir, '../dist/web-runner.mjs'),
-];
+const requiredDistEntries = [distEntry];
 const missingDistEntries = requiredDistEntries.filter((entry) => !existsSync(entry));
 
 if (missingDistEntries.length > 0) {
