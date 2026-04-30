@@ -29,13 +29,14 @@ The full one-page setup lives in [`QUICKSTART.md`](QUICKSTART.md). The TL;DR for
 ```bash
 git clone https://github.com/nexu-io/open-design.git
 cd open-design
-pnpm install              # or npm install
+corepack enable           # selects the pinned pnpm from packageManager
+pnpm install
 pnpm dev:all              # daemon (:7456) + Next dev (:3000)
 pnpm typecheck            # tsc -b --noEmit
 pnpm build                # production build
 ```
 
-Node 20.9+ and <23 is required. macOS, Linux, and WSL2 are tested daily. Windows native should work but isn't a primary target — file an issue if it doesn't.
+Node `~24` and pnpm `10.33.x` are required. `nvm` / `fnm` are optional; use `nvm install 24 && nvm use 24` or `fnm install 24 && fnm use 24` if you prefer managing Node that way. macOS, Linux, and WSL2 are the primary paths. Windows native should work but isn't a primary target — file an issue if it doesn't.
 
 You don't need any agent CLI on your `PATH` to develop OD itself — the daemon will tell you "no agents found" and fall back to the **Anthropic API · BYOK** path, which is the fastest dev loop anyway.
 
@@ -225,7 +226,7 @@ We don't enforce a CLA. Apache-2.0 covers us; your contribution is licensed unde
 
 Open an issue with:
 
-- What you ran (the exact `pnpm dev:all` / `npm start` invocation).
+- What you ran (the exact `pnpm dev:all` / `pnpm start` invocation).
 - Which agent CLI was selected (or whether you were on the BYOK path).
 - The skill + design system pair that triggered it.
 - The relevant **daemon stderr tail** — most "the artifact never rendered" reports get diagnosed in 30 seconds when we can see `spawn ENOENT` or the CLI's actual error.

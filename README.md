@@ -22,7 +22,7 @@
 
 Anthropic's [Claude Design][cd] (released 2026-04-17, Opus 4.7) showed what happens when an LLM stops writing prose and starts shipping design artifacts. It went viral — and stayed closed-source, paid-only, cloud-only, locked to Anthropic's model and Anthropic's skills. There is no checkout, no self-host, no Vercel deploy, no swap-in-your-own-agent.
 
-**Open Design (OD) is the open-source alternative.** Same loop, same artifact-first mental model, none of the lock-in. We don't ship an agent — the strongest coding agents already live on your laptop. We wire them into a skill-driven design workflow that runs on `pnpm dev`, deploys to Vercel, and stays BYOK at every layer.
+**Open Design (OD) is the open-source alternative.** Same loop, same artifact-first mental model, none of the lock-in. We don't ship an agent — the strongest coding agents already live on your laptop. We wire them into a skill-driven design workflow that runs locally with `pnpm dev:all`, can deploy the web layer to Vercel, and stays BYOK at every layer.
 
 Type `make me a magazine-style pitch deck for our seed round`. The interactive question form pops up before the model improvises a single pixel. The agent picks one of five curated visual directions. A live `TodoWrite` plan streams into the UI. The daemon builds a real on-disk project folder with a seed template, layout library, and self-check checklist. The agent reads them — pre-flight enforced — runs a five-dimensional critique against its own output, and emits a single `<artifact>` that renders in a sandboxed iframe seconds later.
 
@@ -45,7 +45,7 @@ OD stands on four open-source shoulders:
 | **Visual directions** | 5 curated schools (Editorial Monocle · Modern Minimal · Tech Utility · Brutalist · Soft Warm) — each ships a deterministic OKLch palette + font stack |
 | **Device frames** | iPhone 15 Pro · Pixel · iPad Pro · MacBook · Browser Chrome — pixel-accurate, shared across screens |
 | **Agent runtime** | Local daemon spawns the CLI in your project folder — agent gets real `Read`, `Write`, `Bash`, `WebFetch` against a real on-disk environment |
-| **Deployable to** | Local (`pnpm dev`) · Vercel · Single-process prod (`npm start`) |
+| **Deployable to** | Local (`pnpm dev:all`) · Vercel web layer · Single-process prod (`pnpm start`) |
 | **License** | Apache-2.0 |
 
 [acd2]: https://github.com/VoltAgent/awesome-design-md
@@ -248,9 +248,9 @@ Every layer is composable. Every layer is a file you can edit. Read [`apps/web/s
 | Layer | Stack |
 |---|---|
 | Frontend | Next.js 16 App Router + React 18 + TypeScript |
-| Daemon | Node 20–22 · Express · SSE streaming · `better-sqlite3` for projects/conversations/messages/tabs |
+| Daemon | Node 24 · Express · SSE streaming · `better-sqlite3` for projects/conversations/messages/tabs |
 | Agent transport | `child_process.spawn` with typed-event parsers for Claude Code (`claude-stream-json`) and Copilot CLI (`copilot-stream-json`); line-buffered plain stdout for the rest |
-| Storage | Plain files in `.od/projects/<id>/` + SQLite at `.od/db.sqlite` (gitignored) |
+| Storage | Plain files in `.od/projects/<id>/` + SQLite at `.od/app.sqlite` (gitignored) |
 | Preview | Sandboxed iframe via `srcdoc` + per-skill `<artifact>` parser |
 | Export | HTML (inline assets) · PDF (browser print) · PPTX (skill-defined) · ZIP (archiver) |
 
@@ -259,12 +259,14 @@ Every layer is composable. Every layer is a file you can edit. Read [`apps/web/s
 ```bash
 git clone https://github.com/nexu-io/open-design.git
 cd open-design
-nvm use              # uses Node 22 from .nvmrc
 corepack enable
+corepack pnpm --version   # should print 10.33.2
 pnpm install
 pnpm dev:all         # daemon (:7456) + Next dev (:3000)
 open http://localhost:3000
 ```
+
+Environment requirements: Node `~24` and pnpm `10.33.x`. `nvm`/`fnm` are optional helpers only; if you use one, run `nvm install 24 && nvm use 24` or `fnm install 24 && fnm use 24` before `pnpm install`.
 
 The first load:
 
@@ -303,47 +305,31 @@ open-design/
 ├── QUICKSTART.md                  ← run / build / deploy guide
 ├── package.json                   ← pnpm workspace, single bin: od
 │
-├── daemon/                        ← Node + Express, the only server
-│   ├── cli.js                     ← `od` bin entry point
-│   ├── server.js                  ← /api/* routes (projects, chat, files, exports)
-│   ├── agents.js                  ← PATH scanner + per-CLI argv builders
-│   ├── claude-stream.js           ← streaming JSON parser for Claude Code stdout
-│   ├── skills.js                  ← SKILL.md frontmatter loader
-│   ├── design-systems.js          ← DESIGN.md loader + swatch extractor
-│   ├── design-system-preview.js   ← live one-shot showcase per system
-│   ├── design-system-showcase.js  ← multi-section gallery render
-│   ├── lint-artifact.js           ← P0/P1 self-check on agent output
-│   ├── projects.js                ← per-project filesystem helpers
-│   ├── db.js                      ← SQLite schema (projects/messages/templates/tabs)
-│   └── frontmatter.js             ← zero-dep YAML-subset parser
+├── apps/
+│   ├── daemon/                    ← Node + Express, the only server
+│   │   ├── cli.js                 ← `od` bin entry point
+│   │   ├── server.js              ← /api/* routes (projects, chat, files, exports)
+│   │   ├── agents.js              ← PATH scanner + per-CLI argv builders
+│   │   ├── claude-stream.js       ← streaming JSON parser for Claude Code stdout
+│   │   ├── skills.js              ← SKILL.md frontmatter loader
+│   │   └── db.js                  ← SQLite schema (projects/messages/templates/tabs)
+│   │
+│   └── web/                       ← Next.js 16 App Router + React client
+│       ├── app/                   ← App Router entrypoints
+│       ├── next.config.ts         ← dev rewrites + prod static export to out/
+│       └── src/                   ← shared React + TS client modules for Next.js
+│           ├── App.tsx            ← routing, bootstrap, settings
+│           ├── components/        ← chat, composer, picker, preview, sketch, …
+│           ├── prompts/
+│           │   ├── system.ts      ← composeSystemPrompt(base, skill, DS, metadata)
+│           │   ├── discovery.ts   ← turn-1 form + turn-2 branch + 5-dim critique
+│           │   └── directions.ts  ← 5 visual directions × OKLch palette + font stack
+│           ├── artifacts/         ← streaming <artifact> parser + manifests
+│           ├── runtime/           ← iframe srcdoc, markdown, export helpers
+│           ├── providers/         ← daemon SSE + BYOK API transports
+│           └── state/             ← config + projects (localStorage + daemon-backed)
 │
-├── app/                           ← Next.js 16 App Router entrypoints
-│   ├── layout.tsx                 ← root layout shell
-│   ├── page.tsx                   ← main app entry
-│   └── [[...slug]]/page.tsx       ← catch-all client shell for project routes
-│
-├── src/                           ← shared React + TS client modules for Next.js
-│   ├── App.tsx                    ← routing, bootstrap, settings
-│   ├── components/                ← 27 components (chat, composer, picker, preview, sketch, …)
-│   ├── prompts/
-│   │   ├── system.ts              ← composeSystemPrompt(base, skill, DS, metadata)
-│   │   ├── official-system.ts     ← identity charter
-│   │   ├── discovery.ts           ← turn-1 form + turn-2 branch + 5-dim critique
-│   │   ├── directions.ts          ← 5 visual directions × OKLch palette + font stack
-│   │   └── deck-framework.ts      ← deck nav / counter / print stylesheet
-│   ├── artifacts/
-│   │   ├── parser.ts              ← streaming <artifact> tag extractor
-│   │   └── question-form.ts       ← <question-form> JSON schema + replay
-│   ├── runtime/
-│   │   ├── srcdoc.ts              ← iframe sandbox wrapper
-│   │   ├── markdown.tsx           ← assistant message renderer
-│   │   ├── exports.ts             ← HTML / PDF / ZIP export helpers
-│   │   └── zip.ts                 ← project archive
-│   ├── providers/
-│   │   ├── daemon.ts              ← /api/chat SSE stream consumer
-│   │   ├── anthropic.ts           ← BYOK Anthropic SDK path
-│   │   └── registry.ts            ← /api/agents, /api/skills, /api/design-systems
-│   └── state/                     ← config + projects (localStorage + daemon-backed)
+├── e2e/                           ← Playwright UI + external integration/Vitest harness
 │
 ├── skills/                        ← 19 SKILL.md skill bundles
 │   ├── web-prototype/             ← default for prototype mode
@@ -385,8 +371,6 @@ open-design/
 │
 ├── templates/
 │   └── deck-framework.html        ← deck baseline (nav / counter / print)
-│
-├── next.config.ts                 ← dev rewrites + prod static export to out/
 │
 ├── scripts/
 │   └── sync-design-systems.mjs    ← re-import upstream awesome-design-md tarball

@@ -222,8 +222,8 @@ The user explicitly opts in to fallback — we don't silently switch, because a 
 First run:
 
 ```
-$ pnpm dev
-[od] daemon starting on :7431
+$ pnpm dev:all
+[od] daemon starting on :7456
 [od] detecting agents…
 [od]   ✓ claude-code v0.6.3 (auth: ok, skills dir linked)
 [od]   ✓ codex v0.8.1 (auth: ok)
@@ -248,7 +248,7 @@ The daemon never grants more authority to an agent than it had on its own. We do
 ## 11. Adapter source layout
 
 ```
-apps/daemon/src/adapters/
+apps/daemon/
 ├── base.ts                 # shared interface + utility helpers
 ├── claude-code/
 │   ├── adapter.ts
