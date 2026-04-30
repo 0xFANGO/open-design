@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { access, chmod, cp, mkdir, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, chmod, cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 
@@ -24,7 +25,7 @@ import {
   stopProcesses,
 } from "@open-design/platform";
 
-import type { ToolPackConfig } from "./config.js";
+import type { ToolPackBuildOutput, ToolPackConfig } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 const PRODUCT_NAME = "Open Design";
@@ -48,39 +49,115 @@ type PackedTarballInfo = {
 type MacPaths = {
   appBuilderConfigPath: string;
   appBuilderOutputRoot: string;
-  appExecutablePath: string;
   appPath: string;
   assembledAppRoot: string;
   assembledMainEntryPath: string;
   assembledPackageJsonPath: string;
+  dmgPath: string;
+  installApplicationsRoot: string;
+  installedAppPath: string;
+  latestMacYmlPath: string;
+  mountPoint: string;
   packagedConfigPath: string;
   resourceRoot: string;
+  systemApplicationsAppPath: string;
   tarballsRoot: string;
+  userApplicationsAppPath: string;
+  zipPath: string;
 };
 
 export type MacPackResult = {
   appPath: string;
+  dmgPath: string | null;
+  latestMacYmlPath: string | null;
   outputRoot: string;
   resourceRoot: string;
   runtimeNamespaceRoot: string;
-  to: "app";
+  to: ToolPackBuildOutput;
+  zipPath: string | null;
 };
+
+type MacStartSource = "built" | "installed" | "system-applications" | "user-applications";
 
 export type MacStartResult = {
   appPath: string;
+  executablePath: string;
   logPath: string;
   namespace: string;
   pid: number;
+  source: MacStartSource;
   status: DesktopStatusSnapshot | null;
 };
 
+type DesktopRootIdentityMarker = {
+  appPath: string;
+  executablePath: string;
+  logPath: string;
+  namespaceRoot: string;
+  pid: number;
+  ppid: number;
+  stamp: SidecarStamp;
+  startedAt: string;
+  updatedAt: string;
+  version: 1;
+};
+
+type DesktopRootIdentityFallback = {
+  marker?: Partial<DesktopRootIdentityMarker>;
+  markerPath: string;
+  processCommand?: string;
+  reason: string;
+};
+
 export type MacStopResult = {
+  fallback?: DesktopRootIdentityFallback;
   gracefulRequested: boolean;
   namespace: string;
   remainingPids: number[];
-  status: "not-running" | "stopped" | "partial";
+  status: "not-running" | "partial" | "stopped" | "unmanaged";
   stoppedPids: number[];
 };
+
+export type MacInstallResult = {
+  detached: boolean;
+  dmgPath: string;
+  installedAppPath: string;
+  mountPoint: string;
+  namespace: string;
+};
+
+export type MacUninstallResult = {
+  installedAppPath: string;
+  namespace: string;
+  removed: boolean;
+  stop: MacStopResult;
+};
+
+export type MacCleanupResult = {
+  detachedMount: boolean;
+  namespace: string;
+  outputRoot: string;
+  removedOutputRoot: boolean;
+  removedRuntimeNamespaceRoot: boolean;
+  runtimeNamespaceRoot: string;
+  stop: MacStopResult;
+};
+
+type ElectronBuilderTarget = "dir" | "dmg" | "zip";
+
+const DESKTOP_LOG_ECHO_ENV = "OD_DESKTOP_LOG_ECHO";
+
+function sanitizeNamespace(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, "-");
+}
+
+function macAppBundleName(namespace: string): string {
+  return `${PRODUCT_NAME}.${sanitizeNamespace(namespace)}.app`;
+}
+
+function macAppExecutablePath(appPath: string): string {
+  return join(appPath, "Contents", "MacOS", PRODUCT_NAME);
+}
 
 function resolveMacAppOutputDirectoryName(): string {
   return process.arch === "arm64" ? "mac-arm64" : "mac";
@@ -89,23 +166,33 @@ function resolveMacAppOutputDirectoryName(): string {
 function resolveMacPaths(config: ToolPackConfig): MacPaths {
   const namespaceRoot = config.roots.output.namespaceRoot;
   const appBuilderOutputRoot = config.roots.output.appBuilderRoot;
+  const namespaceToken = sanitizeNamespace(config.namespace);
   const appPath = join(
     appBuilderOutputRoot,
     resolveMacAppOutputDirectoryName(),
     `${PRODUCT_NAME}.app`,
   );
+  const installApplicationsRoot = join(namespaceRoot, "install", "Applications");
+  const installedAppPath = join(installApplicationsRoot, macAppBundleName(config.namespace));
 
   return {
     appBuilderConfigPath: join(namespaceRoot, "builder-config.json"),
     appBuilderOutputRoot,
-    appExecutablePath: join(appPath, "Contents", "MacOS", PRODUCT_NAME),
     appPath,
     assembledAppRoot: join(namespaceRoot, "assembled", "app"),
     assembledMainEntryPath: join(namespaceRoot, "assembled", "app", "main.cjs"),
     assembledPackageJsonPath: join(namespaceRoot, "assembled", "app", "package.json"),
+    dmgPath: join(namespaceRoot, "dmg", `${PRODUCT_NAME}-${namespaceToken}.dmg`),
+    installApplicationsRoot,
+    installedAppPath,
+    latestMacYmlPath: join(namespaceRoot, "zip", "latest-mac.yml"),
+    mountPoint: join(namespaceRoot, "mount"),
     packagedConfigPath: join(namespaceRoot, "open-design-config.json"),
     resourceRoot: join(namespaceRoot, "resources", "open-design"),
+    systemApplicationsAppPath: join("/Applications", macAppBundleName(config.namespace)),
     tarballsRoot: join(namespaceRoot, "tarballs"),
+    userApplicationsAppPath: join(homedir(), "Applications", macAppBundleName(config.namespace)),
+    zipPath: join(namespaceRoot, "zip", `${PRODUCT_NAME}-${namespaceToken}.zip`),
   };
 }
 
@@ -263,14 +350,36 @@ async function writeAssembledApp(
   await runNpmInstall(paths.assembledAppRoot);
 }
 
-async function runElectronBuilder(config: ToolPackConfig, paths: MacPaths): Promise<void> {
+function resolveElectronBuilderTargets(to: ToolPackBuildOutput): ElectronBuilderTarget[] {
+  switch (to) {
+    case "app":
+      return ["dir"];
+    case "dmg":
+      return ["dir", "dmg"];
+    case "zip":
+      return ["dir", "zip"];
+    case "all":
+      return ["dir", "dmg", "zip"];
+  }
+}
+
+async function runElectronBuilder(
+  config: ToolPackConfig,
+  paths: MacPaths,
+  targets: ElectronBuilderTarget[],
+): Promise<void> {
+  const namespaceToken = sanitizeNamespace(config.namespace);
   const builderConfig = {
     appId: "io.open-design.desktop",
+    artifactName: `${PRODUCT_NAME}-${namespaceToken}.\${ext}`,
     asar: false,
     buildDependenciesFromSource: false,
     compression: "store",
     directories: {
       output: paths.appBuilderOutputRoot,
+    },
+    dmg: {
+      title: `${PRODUCT_NAME}-${namespaceToken}`,
     },
     electronDist: config.electronDistPath,
     electronVersion: config.electronVersion,
@@ -289,11 +398,17 @@ async function runElectronBuilder(config: ToolPackConfig, paths: MacPaths): Prom
     mac: {
       category: "public.app-category.developer-tools",
       identity: null,
-      target: ["dir"],
+      target: targets,
     },
     nodeGypRebuild: false,
     npmRebuild: false,
     productName: PRODUCT_NAME,
+    publish: [
+      {
+        provider: "generic",
+        url: "https://updates.invalid/open-design",
+      },
+    ],
   };
 
   await rm(paths.appBuilderOutputRoot, { force: true, recursive: true });
@@ -317,20 +432,84 @@ async function runElectronBuilder(config: ToolPackConfig, paths: MacPaths): Prom
   });
 }
 
+async function clearQuarantine(path: string): Promise<void> {
+  try {
+    await execFileAsync("xattr", ["-dr", "com.apple.quarantine", path]);
+  } catch {
+    // Ignore when the attribute is absent or unsupported for local unsigned artifacts.
+  }
+}
+
+async function moveBuilderArtifact(options: {
+  destinationPath: string;
+  label: string;
+  sourcePath: string;
+}): Promise<string> {
+  if (!(await pathExists(options.sourcePath))) {
+    throw new Error(`no ${options.label} produced at ${options.sourcePath}`);
+  }
+  await mkdir(dirname(options.destinationPath), { recursive: true });
+  await rm(options.destinationPath, { force: true, recursive: true });
+  await rename(options.sourcePath, options.destinationPath);
+  await clearQuarantine(options.destinationPath);
+  return options.destinationPath;
+}
+
+async function finalizeMacArtifacts(
+  config: ToolPackConfig,
+  paths: MacPaths,
+): Promise<Pick<MacPackResult, "dmgPath" | "latestMacYmlPath" | "zipPath">> {
+  const namespaceToken = sanitizeNamespace(config.namespace);
+  let dmgPath: string | null = null;
+  let latestMacYmlPath: string | null = null;
+  let zipPath: string | null = null;
+
+  if (config.to === "dmg" || config.to === "all") {
+    dmgPath = await moveBuilderArtifact({
+      destinationPath: paths.dmgPath,
+      label: "dmg artifact",
+      sourcePath: join(paths.appBuilderOutputRoot, `${PRODUCT_NAME}-${namespaceToken}.dmg`),
+    });
+  }
+
+  if (config.to === "zip" || config.to === "all") {
+    zipPath = await moveBuilderArtifact({
+      destinationPath: paths.zipPath,
+      label: "zip artifact",
+      sourcePath: join(paths.appBuilderOutputRoot, `${PRODUCT_NAME}-${namespaceToken}.zip`),
+    });
+    const builderLatestMacYmlPath = join(paths.appBuilderOutputRoot, "latest-mac.yml");
+    if (!(await pathExists(builderLatestMacYmlPath))) {
+      throw new Error(`zip target did not produce latest-mac.yml at ${builderLatestMacYmlPath}`);
+    }
+    await mkdir(dirname(paths.latestMacYmlPath), { recursive: true });
+    await rm(paths.latestMacYmlPath, { force: true });
+    await rename(builderLatestMacYmlPath, paths.latestMacYmlPath);
+    latestMacYmlPath = paths.latestMacYmlPath;
+  }
+
+  return { dmgPath, latestMacYmlPath, zipPath };
+}
+
 export async function packMac(config: ToolPackConfig): Promise<MacPackResult> {
   const paths = resolveMacPaths(config);
   await buildWorkspaceArtifacts(config);
   await copyResourceTree(config, paths);
   const tarballs = await collectWorkspaceTarballs(config, paths);
   await writeAssembledApp(config, paths, tarballs);
-  await runElectronBuilder(config, paths);
+  await runElectronBuilder(config, paths, resolveElectronBuilderTargets(config.to));
+  await clearQuarantine(paths.appPath);
+  const artifacts = await finalizeMacArtifacts(config, paths);
 
   return {
     appPath: paths.appPath,
+    dmgPath: artifacts.dmgPath,
+    latestMacYmlPath: artifacts.latestMacYmlPath,
     outputRoot: config.roots.output.namespaceRoot,
     resourceRoot: paths.resourceRoot,
     runtimeNamespaceRoot: config.roots.runtime.namespaceRoot,
     to: config.to,
+    zipPath: artifacts.zipPath,
   };
 }
 
@@ -352,6 +531,177 @@ function desktopLogPath(config: ToolPackConfig): string {
   return join(config.roots.runtime.namespaceRoot, "logs", APP_KEYS.DESKTOP, "latest.log");
 }
 
+function desktopIdentityPath(config: ToolPackConfig): string {
+  return join(config.roots.runtime.namespaceRoot, "runtime", "desktop-root.json");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value != null && !Array.isArray(value);
+}
+
+function isDesktopRootIdentityMarker(value: unknown): value is DesktopRootIdentityMarker {
+  if (!isRecord(value)) return false;
+  return (
+    value.version === 1 &&
+    typeof value.pid === "number" &&
+    typeof value.ppid === "number" &&
+    typeof value.appPath === "string" &&
+    typeof value.executablePath === "string" &&
+    typeof value.logPath === "string" &&
+    typeof value.namespaceRoot === "string" &&
+    typeof value.startedAt === "string" &&
+    typeof value.updatedAt === "string" &&
+    isRecord(value.stamp)
+  );
+}
+
+function summarizeDesktopMarker(
+  marker: DesktopRootIdentityMarker | null,
+): Partial<DesktopRootIdentityMarker> | undefined {
+  if (marker == null) return undefined;
+  return {
+    appPath: marker.appPath,
+    executablePath: marker.executablePath,
+    logPath: marker.logPath,
+    namespaceRoot: marker.namespaceRoot,
+    pid: marker.pid,
+    ppid: marker.ppid,
+    stamp: marker.stamp,
+    startedAt: marker.startedAt,
+    updatedAt: marker.updatedAt,
+    version: marker.version,
+  };
+}
+
+async function readDesktopRootIdentityMarker(config: ToolPackConfig): Promise<{
+  fallback: DesktopRootIdentityFallback;
+  marker: DesktopRootIdentityMarker | null;
+}> {
+  const markerPath = desktopIdentityPath(config);
+  let payload: unknown;
+
+  try {
+    payload = JSON.parse(await readFile(markerPath, "utf8"));
+  } catch (error) {
+    const code = typeof error === "object" && error != null && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : null;
+    return {
+      fallback: {
+        markerPath,
+        reason: code === "ENOENT" ? "marker-not-found" : "marker-read-failed",
+      },
+      marker: null,
+    };
+  }
+
+  if (!isDesktopRootIdentityMarker(payload)) {
+    return {
+      fallback: {
+        markerPath,
+        reason: "marker-invalid-shape",
+      },
+      marker: null,
+    };
+  }
+
+  return {
+    fallback: {
+      marker: summarizeDesktopMarker(payload),
+      markerPath,
+      reason: "marker-present",
+    },
+    marker: payload,
+  };
+}
+
+function commandMatchesDesktopMarker(
+  command: string,
+  marker: DesktopRootIdentityMarker,
+): boolean {
+  return command.includes(marker.executablePath) || command.includes(macAppExecutablePath(marker.appPath));
+}
+
+async function resolveDesktopRootIdentityFallback(config: ToolPackConfig): Promise<{
+  fallback: DesktopRootIdentityFallback;
+  rootPid: number | null;
+}> {
+  const { fallback, marker } = await readDesktopRootIdentityMarker(config);
+  if (marker == null) return { fallback, rootPid: null };
+
+  let stamp: SidecarStamp;
+  try {
+    stamp = OPEN_DESIGN_SIDECAR_CONTRACT.normalizeStamp(marker.stamp);
+  } catch {
+    return {
+      fallback: { ...fallback, reason: "marker-invalid-stamp" },
+      rootPid: null,
+    };
+  }
+
+  const expectedIpc = resolveAppIpcPath({
+    app: APP_KEYS.DESKTOP,
+    contract: OPEN_DESIGN_SIDECAR_CONTRACT,
+    namespace: config.namespace,
+  });
+  if (
+    stamp.app !== APP_KEYS.DESKTOP ||
+    stamp.mode !== SIDECAR_MODES.RUNTIME ||
+    stamp.namespace !== config.namespace ||
+    stamp.ipc !== expectedIpc ||
+    (stamp.source !== SIDECAR_SOURCES.PACKAGED && stamp.source !== SIDECAR_SOURCES.TOOLS_PACK)
+  ) {
+    return {
+      fallback: { ...fallback, reason: "marker-stamp-mismatch" },
+      rootPid: null,
+    };
+  }
+
+  if (marker.namespaceRoot !== config.roots.runtime.namespaceRoot) {
+    return {
+      fallback: { ...fallback, reason: "marker-namespace-root-mismatch" },
+      rootPid: null,
+    };
+  }
+
+  const processes = await listProcessSnapshots();
+  const processInfo = processes.find((entry) => entry.pid === marker.pid) ?? null;
+  if (processInfo == null) {
+    return {
+      fallback: { ...fallback, reason: "marker-pid-not-running" },
+      rootPid: null,
+    };
+  }
+
+  if (!commandMatchesDesktopMarker(processInfo.command, marker)) {
+    return {
+      fallback: {
+        ...fallback,
+        processCommand: processInfo.command,
+        reason: "marker-command-mismatch",
+      },
+      rootPid: null,
+    };
+  }
+
+  return {
+    fallback: {
+      ...fallback,
+      processCommand: processInfo.command,
+      reason: "marker-matched",
+    },
+    rootPid: marker.pid,
+  };
+}
+
+function isUnmanagedDesktopFallback(fallback: DesktopRootIdentityFallback | undefined): boolean {
+  return fallback != null && ![
+    "marker-matched",
+    "marker-not-found",
+    "marker-pid-not-running",
+  ].includes(fallback.reason);
+}
+
 async function waitForDesktopStatus(config: ToolPackConfig, timeoutMs = 45_000): Promise<DesktopStatusSnapshot | null> {
   const stamp = desktopStamp(config);
   const startedAt = Date.now();
@@ -365,45 +715,121 @@ async function waitForDesktopStatus(config: ToolPackConfig, timeoutMs = 45_000):
   return null;
 }
 
-export async function startPackedMacApp(config: ToolPackConfig): Promise<MacStartResult> {
+async function resolvePackedMacStartTarget(config: ToolPackConfig): Promise<{
+  appPath: string;
+  executablePath: string;
+  source: MacStartSource;
+}> {
   const paths = resolveMacPaths(config);
-  if (!(await pathExists(paths.appExecutablePath))) {
-    throw new Error(`no mac .app executable found at ${paths.appExecutablePath}; run tools-pack mac build --to app first`);
-  }
-  const stamp = desktopStamp(config);
-  const logPath = desktopLogPath(config);
-  await mkdir(dirname(logPath), { recursive: true });
-  const logHandle = await open(logPath, "w");
+  const candidates: Array<{ appPath: string; source: MacStartSource }> = [
+    { appPath: paths.installedAppPath, source: "installed" },
+    { appPath: paths.userApplicationsAppPath, source: "user-applications" },
+    { appPath: paths.systemApplicationsAppPath, source: "system-applications" },
+    { appPath: paths.appPath, source: "built" },
+  ];
 
+  for (const candidate of candidates) {
+    const executablePath = macAppExecutablePath(candidate.appPath);
+    if (await pathExists(executablePath)) {
+      return { ...candidate, executablePath };
+    }
+  }
+
+  throw new Error(
+    `no mac .app executable found for namespace=${config.namespace}; run tools-pack mac build --to all and tools-pack mac install first`,
+  );
+}
+
+async function detachMount(mountPoint: string): Promise<boolean> {
   try {
-    const spawned = await spawnBackgroundProcess({
-      args: createProcessStampArgs(stamp, OPEN_DESIGN_SIDECAR_CONTRACT),
-      command: paths.appExecutablePath,
-      cwd: paths.appPath,
-      env: createSidecarLaunchEnv({
-        base: join(config.roots.runtime.namespaceRoot, "runtime"),
-        contract: OPEN_DESIGN_SIDECAR_CONTRACT,
-        extraEnv: process.env,
-        stamp,
-      }),
-      logFd: logHandle.fd,
-    });
-    const status = await waitForDesktopStatus(config);
-    return {
-      appPath: paths.appPath,
-      logPath,
-      namespace: config.namespace,
-      pid: spawned.pid,
-      status,
-    };
-  } finally {
-    await logHandle.close().catch(() => undefined);
+    await execFileAsync("hdiutil", ["detach", mountPoint, "-quiet"]);
+    return true;
+  } catch {
+    try {
+      await execFileAsync("hdiutil", ["detach", mountPoint, "-force", "-quiet"]);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
-async function findToolsPackProcessTree(config: ToolPackConfig): Promise<number[]> {
+export async function installPackedMacDmg(config: ToolPackConfig): Promise<MacInstallResult> {
+  const paths = resolveMacPaths(config);
+  if (!(await pathExists(paths.dmgPath))) {
+    throw new Error(`no mac dmg found at ${paths.dmgPath}; run tools-pack mac build --to all first`);
+  }
+
+  await rm(paths.mountPoint, { force: true, recursive: true });
+  await mkdir(paths.mountPoint, { recursive: true });
+  await rm(paths.installedAppPath, { force: true, recursive: true });
+  await mkdir(paths.installApplicationsRoot, { recursive: true });
+
+  let detached = false;
+  try {
+    await execFileAsync("hdiutil", [
+      "attach",
+      paths.dmgPath,
+      "-mountpoint",
+      paths.mountPoint,
+      "-nobrowse",
+      "-quiet",
+    ]);
+    await execFileAsync("ditto", [join(paths.mountPoint, `${PRODUCT_NAME}.app`), paths.installedAppPath]);
+    await clearQuarantine(paths.installedAppPath);
+  } finally {
+    detached = await detachMount(paths.mountPoint);
+  }
+
+  return {
+    detached,
+    dmgPath: paths.dmgPath,
+    installedAppPath: paths.installedAppPath,
+    mountPoint: paths.mountPoint,
+    namespace: config.namespace,
+  };
+}
+
+export async function startPackedMacApp(config: ToolPackConfig): Promise<MacStartResult> {
+  const target = await resolvePackedMacStartTarget(config);
+  const stamp = desktopStamp(config);
+  const logPath = desktopLogPath(config);
+  await mkdir(dirname(logPath), { recursive: true });
+  await writeFile(logPath, "", "utf8");
+
+  const spawned = await spawnBackgroundProcess({
+    args: createProcessStampArgs(stamp, OPEN_DESIGN_SIDECAR_CONTRACT),
+    command: target.executablePath,
+    cwd: target.appPath,
+    env: createSidecarLaunchEnv({
+      base: join(config.roots.runtime.namespaceRoot, "runtime"),
+      contract: OPEN_DESIGN_SIDECAR_CONTRACT,
+      extraEnv: {
+        ...process.env,
+        [DESKTOP_LOG_ECHO_ENV]: "0",
+      },
+      stamp,
+    }),
+    logFd: null,
+  });
+  const status = await waitForDesktopStatus(config);
+  return {
+    appPath: target.appPath,
+    executablePath: target.executablePath,
+    logPath,
+    namespace: config.namespace,
+    pid: spawned.pid,
+    source: target.source,
+    status,
+  };
+}
+
+async function findManagedDesktopProcessTree(config: ToolPackConfig): Promise<{
+  fallback?: DesktopRootIdentityFallback;
+  pids: number[];
+}> {
   const processes = await listProcessSnapshots();
-  const rootPids = processes
+  const stampedRootPids = processes
     .filter((processInfo) =>
       matchesStampedProcess(processInfo, {
         mode: SIDECAR_MODES.RUNTIME,
@@ -412,22 +838,30 @@ async function findToolsPackProcessTree(config: ToolPackConfig): Promise<number[
       }, OPEN_DESIGN_SIDECAR_CONTRACT),
     )
     .map((processInfo) => processInfo.pid);
-  return collectProcessTreePids(processes, rootPids);
+  const identity = await resolveDesktopRootIdentityFallback(config);
+  const pids = collectProcessTreePids(processes, [
+    ...stampedRootPids,
+    identity.rootPid,
+  ]);
+  return { fallback: identity.fallback, pids };
 }
 
-async function waitForNoToolsPackProcesses(config: ToolPackConfig, timeoutMs = 6000): Promise<number[]> {
+async function waitForNoManagedDesktopProcesses(
+  config: ToolPackConfig,
+  timeoutMs = 6000,
+): Promise<{ fallback?: DesktopRootIdentityFallback; pids: number[] }> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
-    const pids = await findToolsPackProcessTree(config);
-    if (pids.length === 0) return [];
+    const current = await findManagedDesktopProcessTree(config);
+    if (current.pids.length === 0) return current;
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   }
-  return await findToolsPackProcessTree(config);
+  return await findManagedDesktopProcessTree(config);
 }
 
 export async function stopPackedMacApp(config: ToolPackConfig): Promise<MacStopResult> {
   const stamp = desktopStamp(config);
-  const before = await findToolsPackProcessTree(config);
+  const before = await findManagedDesktopProcessTree(config);
   let gracefulRequested = false;
 
   try {
@@ -437,19 +871,22 @@ export async function stopPackedMacApp(config: ToolPackConfig): Promise<MacStopR
     gracefulRequested = false;
   }
 
-  const remainingAfterGraceful = gracefulRequested ? await waitForNoToolsPackProcesses(config) : before;
-  if (remainingAfterGraceful.length === 0) {
+  const remainingAfterGraceful = gracefulRequested ? await waitForNoManagedDesktopProcesses(config) : before;
+  if (remainingAfterGraceful.pids.length === 0) {
+    const unmanaged = !gracefulRequested && before.pids.length === 0 && isUnmanagedDesktopFallback(before.fallback);
     return {
+      ...(before.fallback == null ? {} : { fallback: before.fallback }),
       gracefulRequested,
       namespace: config.namespace,
       remainingPids: [],
-      status: before.length === 0 ? "not-running" : "stopped",
-      stoppedPids: before,
+      status: unmanaged ? "unmanaged" : before.pids.length === 0 ? "not-running" : "stopped",
+      stoppedPids: before.pids,
     };
   }
 
-  const stopped = await stopProcesses(remainingAfterGraceful);
+  const stopped = await stopProcesses(remainingAfterGraceful.pids);
   return {
+    ...(remainingAfterGraceful.fallback == null ? {} : { fallback: remainingAfterGraceful.fallback }),
     gracefulRequested,
     namespace: config.namespace,
     remainingPids: stopped.remainingPids,
@@ -469,5 +906,40 @@ export async function readPackedMacLogs(config: ToolPackConfig) {
   return {
     logs: Object.fromEntries(entries),
     namespace: config.namespace,
+  };
+}
+
+export async function uninstallPackedMacApp(config: ToolPackConfig): Promise<MacUninstallResult> {
+  const paths = resolveMacPaths(config);
+  const stop = await stopPackedMacApp(config);
+  const removed = await pathExists(paths.installedAppPath);
+  await rm(paths.installedAppPath, { force: true, recursive: true });
+
+  return {
+    installedAppPath: paths.installedAppPath,
+    namespace: config.namespace,
+    removed,
+    stop,
+  };
+}
+
+export async function cleanupPackedMacNamespace(config: ToolPackConfig): Promise<MacCleanupResult> {
+  const paths = resolveMacPaths(config);
+  const stop = await stopPackedMacApp(config);
+  const detachedMount = await detachMount(paths.mountPoint);
+  const removedOutputRoot = await pathExists(config.roots.output.namespaceRoot);
+  const removedRuntimeNamespaceRoot = await pathExists(config.roots.runtime.namespaceRoot);
+
+  await rm(config.roots.output.namespaceRoot, { force: true, recursive: true });
+  await rm(config.roots.runtime.namespaceRoot, { force: true, recursive: true });
+
+  return {
+    detachedMount,
+    namespace: config.namespace,
+    outputRoot: config.roots.output.namespaceRoot,
+    removedOutputRoot,
+    removedRuntimeNamespaceRoot,
+    runtimeNamespaceRoot: config.roots.runtime.namespaceRoot,
+    stop,
   };
 }

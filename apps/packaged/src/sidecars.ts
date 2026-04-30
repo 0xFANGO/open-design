@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, open, type FileHandle } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { delimiter, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import {
@@ -38,6 +39,11 @@ type ManagedSidecarChild = {
   child: ChildProcess;
   ipcPath: string;
   logHandle: FileHandle;
+};
+
+type PackagedDaemonManagedPathEnv = {
+  OD_DATA_DIR: string;
+  OD_RESOURCE_ROOT: string;
 };
 
 function resolveSidecarEntry(packageName: string, exportName: string): string {
@@ -87,6 +93,33 @@ function extractPort(url: string): string {
   return parsed.port || (parsed.protocol === "https:" ? "443" : "80");
 }
 
+function resolvePackagedPathEnv(basePath = process.env.PATH ?? ""): string {
+  const home = homedir();
+  const candidates = [
+    ...basePath.split(delimiter),
+    join(home, ".local", "bin"),
+    join(home, ".opencode", "bin"),
+    join(home, ".cargo", "bin"),
+    join(home, ".bun", "bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+  ];
+  return [...new Set(candidates.filter((entry) => entry.length > 0))].join(delimiter);
+}
+
+function createPackagedDaemonManagedPathEnv(
+  paths: PackagedNamespacePaths,
+): PackagedDaemonManagedPathEnv {
+  return {
+    OD_DATA_DIR: paths.dataRoot,
+    OD_RESOURCE_ROOT: paths.resourceRoot,
+  };
+}
+
 async function spawnSidecarChild(options: {
   app: AppKey;
   entryPath: string;
@@ -115,6 +148,7 @@ async function spawnSidecarChild(options: {
       ...process.env,
       ...options.env,
       NODE_ENV: "production",
+      PATH: resolvePackagedPathEnv(),
       ...(options.nodeCommand == null ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
     },
     stamp,
@@ -162,7 +196,10 @@ export async function startPackagedSidecars(
   await mkdir(paths.cacheRoot, { recursive: true });
   await mkdir(paths.dataRoot, { recursive: true });
   await mkdir(paths.logsRoot, { recursive: true });
+  await mkdir(paths.desktopLogsRoot, { recursive: true });
   await mkdir(paths.runtimeRoot, { recursive: true });
+  await mkdir(paths.electronUserDataRoot, { recursive: true });
+  await mkdir(paths.electronSessionDataRoot, { recursive: true });
 
   const children: ManagedSidecarChild[] = [];
 
@@ -172,8 +209,11 @@ export async function startPackagedSidecars(
       entryPath: resolveSidecarEntry("@open-design/daemon", "sidecar"),
       env: {
         [SIDECAR_ENV.DAEMON_PORT]: "0",
-        OD_DATA_DIR: paths.dataRoot,
-        OD_RESOURCE_ROOT: paths.resourceRoot,
+        // Packaged daemon managed paths are deliberately delivered through
+        // the sidecar launch environment. The daemon may keep its own default
+        // fallback, but packaged runtime must not rely on path inference from
+        // Electron userData, bundle names, or ports.
+        ...createPackagedDaemonManagedPathEnv(paths),
       },
       nodeCommand: options.nodeCommand,
       paths,

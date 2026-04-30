@@ -2,7 +2,15 @@ import { cac } from "cac";
 import type { CAC } from "cac";
 
 import { resolveToolPackConfig, type ToolPackCliOptions } from "./config.js";
-import { packMac, readPackedMacLogs, startPackedMacApp, stopPackedMacApp } from "./mac.js";
+import {
+  cleanupPackedMacNamespace,
+  installPackedMacDmg,
+  packMac,
+  readPackedMacLogs,
+  startPackedMacApp,
+  stopPackedMacApp,
+  uninstallPackedMacApp,
+} from "./mac.js";
 
 type CliOptions = ToolPackCliOptions;
 
@@ -32,17 +40,20 @@ function addSharedOptions(command: CacCommand) {
 }
 
 function addBuildOptions(command: CacCommand) {
-  return command.option("--to <target>", "build target: app (mac v1)");
+  return command.option("--to <target>", "build target: all|app|dmg|zip (default: all)");
 }
 
 const cli = cac("tools-pack");
 
-addBuildOptions(addSharedOptions(cli.command("mac <action>", "Mac packaging commands: build|start|stop|logs"))).action(
+addBuildOptions(addSharedOptions(cli.command("mac <action>", "Mac packaging commands: build|install|start|stop|logs|uninstall|cleanup"))).action(
   async (action: string, options: CliOptions) => {
     const config = resolveToolPackConfig("mac", options);
     switch (action) {
       case "build":
         printJson(await packMac(config));
+        return;
+      case "install":
+        printJson(await installPackedMacDmg(config));
         return;
       case "start":
         printJson(await startPackedMacApp(config));
@@ -52,6 +63,12 @@ addBuildOptions(addSharedOptions(cli.command("mac <action>", "Mac packaging comm
         return;
       case "logs":
         printLogs(await readPackedMacLogs(config), options);
+        return;
+      case "uninstall":
+        printJson(await uninstallPackedMacApp(config));
+        return;
+      case "cleanup":
+        printJson(await cleanupPackedMacNamespace(config));
         return;
       default:
         throw new Error(`unsupported mac action: ${action}`);

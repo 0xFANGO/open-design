@@ -5,7 +5,7 @@ Follow the root `AGENTS.md` and `tools/AGENTS.md` first. This tool owns the repo
 ## Owns
 
 - Local packaging orchestration for packaged Open Design artifacts.
-- mac-first build/start/stop/logs smoke commands.
+- mac-first build/install/start/stop/logs/uninstall/cleanup smoke commands.
 - Consuming sidecar/process/path primitives from `@open-design/sidecar-proto`, `@open-design/sidecar`, and `@open-design/platform`.
 
 ## Does not own
@@ -13,10 +13,12 @@ Follow the root `AGENTS.md` and `tools/AGENTS.md` first. This tool owns the repo
 - Product business logic.
 - Sidecar protocol definitions.
 - A second process identity model.
-- Release publishing or signing until the local packaged runtime is stable.
+- Release publishing, updater runtime integration, or signing until the local packaged runtime is stable.
 
 ## Rules
 
 - Do not hand-build `--od-stamp-*` args; use `createProcessStampArgs` with `OPEN_DESIGN_SIDECAR_CONTRACT`.
 - Do not use port numbers in data/log/runtime/cache path decisions. Namespace decides paths; ports are only transient transports.
-- Keep mac v1 focused on `.app` build/start/stop/logs before adding dmg/zip/signing/release/windows.
+- Release artifacts keep canonical `Open Design.app`; local tools-pack installs may use `Open Design.<namespace>.app` only as an install-path/app-bundle naming convention for developer multi-instance validation.
+- Do not let namespace-named `.app` installs change data/log/runtime/cache path conventions.
+- Keep signing/notarization/release publishing/windows out of this local mac packaging loop unless explicitly requested.

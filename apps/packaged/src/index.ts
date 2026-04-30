@@ -14,9 +14,21 @@ import { readProcessStamp } from "@open-design/platform";
 import { app } from "electron";
 
 import { readPackagedConfig } from "./config.js";
+import { writePackagedDesktopIdentity } from "./identity.js";
+import {
+  applyPackagedElectronPathOverrides,
+  ensurePackagedNamespacePaths,
+} from "./launch.js";
+import {
+  attachPackagedDesktopProcessLogging,
+  createPackagedDesktopLogger,
+  type PackagedDesktopLogger,
+} from "./logging.js";
 import { resolvePackagedNamespacePaths } from "./paths.js";
 import { packagedEntryUrl, registerOdProtocol } from "./protocol.js";
 import { startPackagedSidecars } from "./sidecars.js";
+
+let packagedLogger: PackagedDesktopLogger | null = null;
 
 function createPackagedDesktopStamp(namespace: string): SidecarStamp {
   return {
@@ -45,13 +57,18 @@ function applyLaunchEnv(base: string, stamp: SidecarStamp): void {
 }
 
 async function main(): Promise<void> {
-  await app.whenReady();
-
   const config = await readPackagedConfig();
-  const argvStamp = readProcessStamp(process.argv.slice(2), OPEN_DESIGN_SIDECAR_CONTRACT);
+  const argvStamp = readProcessStamp(process.argv.slice(1), OPEN_DESIGN_SIDECAR_CONTRACT);
   const namespace = argvStamp?.namespace ?? config.namespace;
   const paths = resolvePackagedNamespacePaths(config, namespace);
   const stamp = argvStamp ?? createPackagedDesktopStamp(namespace);
+
+  await ensurePackagedNamespacePaths(paths);
+  packagedLogger = createPackagedDesktopLogger(paths);
+  attachPackagedDesktopProcessLogging({ logger: packagedLogger, paths, stamp });
+  applyPackagedElectronPathOverrides(paths);
+  const identity = await writePackagedDesktopIdentity({ paths, stamp });
+  await app.whenReady();
 
   applyLaunchEnv(paths.runtimeRoot, stamp);
 
@@ -69,7 +86,11 @@ async function main(): Promise<void> {
   const { runDesktopMain } = await import("@open-design/desktop/main");
   await runDesktopMain(runtime, {
     async beforeShutdown() {
-      await sidecars.close();
+      try {
+        await sidecars.close();
+      } finally {
+        await identity.close();
+      }
     },
     async discoverWebUrl() {
       return packagedEntryUrl();
@@ -78,6 +99,7 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
+  packagedLogger?.error("packaged runtime failed", { error });
   console.error("packaged runtime failed", error);
   process.exit(1);
 });

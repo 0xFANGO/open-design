@@ -15,7 +15,7 @@ const ENTRY_DIR_NAME = path.basename(__dirname);
 export const WORKSPACE_ROOT = resolve(__dirname, ENTRY_DIR_NAME === "dist" ? "../../.." : "../../..");
 
 export type ToolPackPlatform = "mac";
-export type ToolPackBuildOutput = "app";
+export type ToolPackBuildOutput = "all" | "app" | "dmg" | "zip";
 
 export type ToolPackCliOptions = {
   dir?: string;
@@ -50,8 +50,9 @@ export type ToolPackConfig = {
 };
 
 function resolveToolPackBuildOutput(value: string | undefined): ToolPackBuildOutput {
-  if (value == null || value.length === 0 || value === "app") return "app";
-  throw new Error(`unsupported mac --to target for this slice: ${value}`);
+  if (value == null || value.length === 0) return "all";
+  if (value === "all" || value === "app" || value === "dmg" || value === "zip") return value;
+  throw new Error(`unsupported mac --to target: ${value}`);
 }
 
 function resolveElectronVersion(workspaceRoot: string): string {

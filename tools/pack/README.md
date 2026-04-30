@@ -2,11 +2,41 @@
 
 Local packaging control plane for Open Design.
 
-The first active slice is mac-first and intentionally small:
+The active slice is mac-first local packaging and smoke lifecycle control:
 
-- `tools-pack mac build --to app`
+- `tools-pack mac build --to all`
+- `tools-pack mac build --to app|dmg|zip`
+- `tools-pack mac install`
 - `tools-pack mac start`
 - `tools-pack mac stop`
 - `tools-pack mac logs`
+- `tools-pack mac uninstall`
+- `tools-pack mac cleanup`
 
-Release publishing, signing, installers, and Windows packaging are later phases.
+Build artifacts are namespace-scoped under `.tmp/tools-pack/out/mac/namespaces/<namespace>/`.
+Release artifacts keep the canonical `Open Design.app` bundle shape; local `tools-pack install` copies it as
+`Open Design.<namespace>.app` so developer namespaces can coexist without affecting runtime data/log/cache paths.
+
+Packaged runtime state is namespace-scoped under `.tmp/tools-pack/runtime/mac/namespaces/<namespace>/`:
+
+- `data/` is the daemon-managed data root passed to the daemon through the packaged sidecar launch environment.
+- `logs/` contains packaged process logs for `desktop`, `web`, and `daemon`.
+- `runtime/` is the sidecar runtime base used by the packaged desktop/web/daemon process group.
+- `cache/` is reserved for namespace-local packaged cache state.
+- `user-data/` is the Electron/Chromium `userData` root, with `user-data/session/` used for `sessionData`.
+
+Finder/manual launches cannot carry argv stamps on the root desktop process. To keep process fallback safe,
+`apps/packaged` writes `runtime/desktop-root.json` with the desktop stamp, PID, executable path, app path, and log path.
+`tools-pack mac stop` trusts that marker only when namespace/stamp/PID/command validation passes; otherwise it reports the
+unmanaged/not-owned reason instead of killing unknown processes.
+
+Packaged desktop also writes main-process lifecycle logs to `logs/desktop/latest.log` so Finder/manual launches are
+diagnosable. This log is intentionally scoped to packaged desktop startup/shutdown/process errors and does not capture
+web/renderer console output.
+
+The packaged daemon path contract is explicit: `tools-pack` writes namespace/base config, `apps/packaged` resolves
+namespace paths, and the packaged sidecar launcher passes daemon managed paths via launch env. The daemon may keep its
+own default fallback for non-packaged launches, but packaged runtime must not rely on fallback inference from Electron
+`userData`, app bundle names, or ports.
+
+Release publishing, signing/notarization, updater runtime integration, and Windows packaging are later phases.
