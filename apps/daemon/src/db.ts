@@ -134,6 +134,15 @@ function migrate(db) {
   if (!messageCols.some((c) => c.name === 'agent_name')) {
     db.exec(`ALTER TABLE messages ADD COLUMN agent_name TEXT`);
   }
+  if (!messageCols.some((c) => c.name === 'run_id')) {
+    db.exec(`ALTER TABLE messages ADD COLUMN run_id TEXT`);
+  }
+  if (!messageCols.some((c) => c.name === 'run_status')) {
+    db.exec(`ALTER TABLE messages ADD COLUMN run_status TEXT`);
+  }
+  if (!messageCols.some((c) => c.name === 'last_run_event_id')) {
+    db.exec(`ALTER TABLE messages ADD COLUMN last_run_event_id TEXT`);
+  }
   const deploymentCols = db.prepare(`PRAGMA table_info(deployments)`).all();
   if (!deploymentCols.some((c) => c.name === 'status')) {
     db.exec(`ALTER TABLE deployments ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'`);
@@ -285,6 +294,66 @@ export function listProjects(db) {
   return rows.map(normalizeProject);
 }
 
+export function listLatestProjectRunStatuses(db) {
+  const rows = db
+    .prepare(
+      `SELECT c.project_id AS projectId,
+              m.run_id AS runId,
+              m.run_status AS status,
+              COALESCE(m.ended_at, m.started_at, m.created_at) AS updatedAt
+         FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+        WHERE m.run_status IS NOT NULL
+        ORDER BY updatedAt DESC`,
+    )
+    .all();
+  const latestByProject = new Map();
+  for (const row of rows) {
+    if (!latestByProject.has(row.projectId)) {
+      latestByProject.set(row.projectId, {
+        value: normalizeProjectRunStatus(row.status),
+        updatedAt: Number(row.updatedAt),
+        runId: row.runId ?? undefined,
+      });
+    }
+  }
+  return latestByProject;
+}
+
+export function listProjectsAwaitingInput(db) {
+  const rows = db
+    .prepare(
+      `SELECT latest.projectId
+         FROM (
+           SELECT c.project_id AS projectId,
+                  m.conversation_id AS conversationId,
+                  m.created_at AS createdAt,
+                  m.position AS position,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY c.project_id
+                    ORDER BY m.created_at DESC, m.position DESC
+                  ) AS rowNum
+             FROM messages m
+             JOIN conversations c ON c.id = m.conversation_id
+            WHERE m.role = 'assistant'
+              AND LOWER(m.content) LIKE '%<question-form%'
+         ) latest
+        WHERE latest.rowNum = 1
+          AND NOT EXISTS (
+            SELECT 1
+              FROM messages reply
+             WHERE reply.conversation_id = latest.conversationId
+               AND reply.role = 'user'
+               AND (
+                 reply.created_at > latest.createdAt
+                 OR (reply.created_at = latest.createdAt AND reply.position > latest.position)
+               )
+          )`,
+    )
+    .all();
+  return new Set(rows.map((row) => row.projectId));
+}
+
 export function getProject(db, id) {
   const row = db
     .prepare(`SELECT ${PROJECT_COLS} FROM projects WHERE id = ?`)
@@ -363,6 +432,21 @@ function normalizeProject(row) {
     createdAt: Number(row.createdAt),
     updatedAt: Number(row.updatedAt),
   };
+}
+
+function normalizeProjectRunStatus(status) {
+  if (status === 'starting') return 'running';
+  if (status === 'cancelled') return 'canceled';
+  if (
+    status === 'queued' ||
+    status === 'running' ||
+    status === 'succeeded' ||
+    status === 'failed' ||
+    status === 'canceled'
+  ) {
+    return status;
+  }
+  return 'not_started';
 }
 
 // ---------- templates ----------
@@ -499,6 +583,8 @@ export function listMessages(db, conversationId) {
   return db
     .prepare(
       `SELECT id, role, content, agent_id AS agentId, agent_name AS agentName,
+              run_id AS runId, run_status AS runStatus,
+              last_run_event_id AS lastRunEventId,
               events_json AS eventsJson,
               attachments_json AS attachmentsJson,
               produced_files_json AS producedFilesJson,
@@ -521,6 +607,7 @@ export function upsertMessage(db, conversationId, m) {
     db.prepare(
       `UPDATE messages
           SET role = ?, content = ?, agent_id = ?, agent_name = ?,
+              run_id = ?, run_status = ?, last_run_event_id = ?,
               events_json = ?, attachments_json = ?,
               produced_files_json = ?, started_at = ?, ended_at = ?
         WHERE id = ?`,
@@ -529,6 +616,9 @@ export function upsertMessage(db, conversationId, m) {
       m.content,
       m.agentId ?? null,
       m.agentName ?? null,
+      m.runId ?? null,
+      m.runStatus ?? null,
+      m.lastRunEventId ?? null,
       m.events ? JSON.stringify(m.events) : null,
       m.attachments ? JSON.stringify(m.attachments) : null,
       m.producedFiles ? JSON.stringify(m.producedFiles) : null,
@@ -543,15 +633,16 @@ export function upsertMessage(db, conversationId, m) {
       )
       .get(conversationId);
     const position = (max?.m ?? -1) + 1;
-    // 13 values: id, conversation_id, role, content, agent_id, agent_name,
-    // events_json, attachments_json, produced_files_json, started_at,
-    // ended_at, position, created_at.
+    // 16 values: id, conversation_id, role, content, agent_id, agent_name,
+    // run_id, run_status, last_run_event_id, events_json, attachments_json,
+    // produced_files_json, started_at, ended_at, position, created_at.
     db.prepare(
       `INSERT INTO messages
-         (id, conversation_id, role, content, agent_id, agent_name, events_json,
+         (id, conversation_id, role, content, agent_id, agent_name,
+          run_id, run_status, last_run_event_id, events_json,
           attachments_json, produced_files_json,
           started_at, ended_at, position, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       m.id,
       conversationId,
@@ -559,6 +650,9 @@ export function upsertMessage(db, conversationId, m) {
       m.content,
       m.agentId ?? null,
       m.agentName ?? null,
+      m.runId ?? null,
+      m.runStatus ?? null,
+      m.lastRunEventId ?? null,
       m.events ? JSON.stringify(m.events) : null,
       m.attachments ? JSON.stringify(m.attachments) : null,
       m.producedFiles ? JSON.stringify(m.producedFiles) : null,
@@ -576,6 +670,8 @@ export function upsertMessage(db, conversationId, m) {
   const row = db
     .prepare(
       `SELECT id, role, content, agent_id AS agentId, agent_name AS agentName,
+              run_id AS runId, run_status AS runStatus,
+              last_run_event_id AS lastRunEventId,
               events_json AS eventsJson,
               attachments_json AS attachmentsJson,
               produced_files_json AS producedFilesJson,
@@ -598,6 +694,9 @@ function normalizeMessage(row) {
     content: row.content,
     agentId: row.agentId ?? undefined,
     agentName: row.agentName ?? undefined,
+    runId: row.runId ?? undefined,
+    runStatus: row.runStatus ?? undefined,
+    lastRunEventId: row.lastRunEventId ?? undefined,
     events: parseJsonOrUndef(row.eventsJson),
     attachments: parseJsonOrUndef(row.attachmentsJson),
     producedFiles: parseJsonOrUndef(row.producedFilesJson),

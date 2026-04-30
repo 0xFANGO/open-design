@@ -137,6 +137,80 @@ describe('deploy file set', () => {
     });
   });
 
+  it('does not treat navigation hrefs as deploy dependencies', async () => {
+    const { projectsRoot, projectId, dir } = await setupProject();
+    await writeFile(
+      path.join(dir, 'index.html'),
+      '<!doctype html><a href="/pricing">Pricing</a><a href="contact">Contact</a>',
+    );
+
+    const files = await buildDeployFileSet(projectsRoot, projectId, 'index.html');
+    const index = files.find((f) => f.file === 'index.html');
+
+    expect(files.map((f) => f.file)).toEqual(['index.html']);
+    expect(index?.data.toString('utf8')).toContain('href="/pricing"');
+    expect(index?.data.toString('utf8')).toContain('href="contact"');
+  });
+
+  it('collects and rewrites unquoted asset attributes', async () => {
+    const { projectsRoot, projectId, dir } = await setupProject();
+    await mkdir(path.join(dir, 'sub', 'assets'), { recursive: true });
+    await writeFile(
+      path.join(dir, 'sub', 'page.html'),
+      '<!doctype html><img src=assets/logo.png><video poster=assets/poster.png></video>',
+    );
+    await writeFile(path.join(dir, 'sub', 'assets', 'logo.png'), 'logo');
+    await writeFile(path.join(dir, 'sub', 'assets', 'poster.png'), 'poster');
+
+    const files = await buildDeployFileSet(projectsRoot, projectId, 'sub/page.html');
+    const index = files.find((f) => f.file === 'index.html');
+
+    expect(files.map((f) => f.file).sort()).toEqual([
+      'index.html',
+      'sub/assets/logo.png',
+      'sub/assets/poster.png',
+    ]);
+    expect(index?.data.toString('utf8')).toContain('src=sub/assets/logo.png');
+    expect(index?.data.toString('utf8')).toContain('poster=sub/assets/poster.png');
+  });
+
+  it('ignores arbitrary URI schemes in html references', async () => {
+    const { projectsRoot, projectId, dir } = await setupProject();
+    await writeFile(
+      path.join(dir, 'index.html'),
+      '<iframe src="about:blank"></iframe><a href="ftp://example.com/file">ftp</a><a href="sms:+15555550123">sms</a>',
+    );
+
+    const files = await buildDeployFileSet(projectsRoot, projectId, 'index.html');
+
+    expect(files.map((f) => f.file)).toEqual(['index.html']);
+  });
+
+  it('ignores src-like text inside inline scripts', async () => {
+    const { projectsRoot, projectId, dir } = await setupProject();
+    await writeFile(
+      path.join(dir, 'index.html'),
+      '<!doctype html><script>const text = \'<img src="missing.png">\';</script>',
+    );
+
+    const files = await buildDeployFileSet(projectsRoot, projectId, 'index.html');
+
+    expect(files.map((f) => f.file)).toEqual(['index.html']);
+  });
+
+  it('collects and rewrites unquoted stylesheet links', async () => {
+    const { projectsRoot, projectId, dir } = await setupProject();
+    await mkdir(path.join(dir, 'sub'), { recursive: true });
+    await writeFile(path.join(dir, 'sub', 'page.html'), '<link href=style.css rel=stylesheet>');
+    await writeFile(path.join(dir, 'sub', 'style.css'), 'body{color:red}');
+
+    const files = await buildDeployFileSet(projectsRoot, projectId, 'sub/page.html');
+    const index = files.find((f) => f.file === 'index.html');
+
+    expect(files.map((f) => f.file).sort()).toEqual(['index.html', 'sub/style.css']);
+    expect(index?.data.toString('utf8')).toContain('href=sub/style.css');
+  });
+
   it('ignores remote, data, blob, mail, and anchor references', () => {
     const refs = extractHtmlReferences(
       '<a href="#x"></a><img src="https://x.test/a.png"><img src="data:image/png,abc"><script src="//cdn.test/a.js"></script><a href="mailto:a@test.com"></a>',

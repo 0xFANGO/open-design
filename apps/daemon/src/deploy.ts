@@ -213,14 +213,20 @@ export async function deployToVercel({ config, files, projectId }) {
 
 export function extractHtmlReferences(html) {
   const refs = [];
-  const attrRe = /\b(?:src|href|poster)\s*=\s*(['"])(.*?)\1/gi;
-  let match;
-  while ((match = attrRe.exec(html))) refs.push(match[2]);
-  const srcsetRe = /\bsrcset\s*=\s*(['"])(.*?)\1/gi;
-  while ((match = srcsetRe.exec(html))) {
-    for (const part of match[2].split(',')) {
-      const url = part.trim().split(/\s+/)[0];
-      if (url) refs.push(url);
+  for (const tag of parseHtmlTags(html)) {
+    const attrs = parseHtmlAttributes(tag.attrs);
+    for (const name of ['src', 'poster']) {
+      const value = attrs.get(name);
+      if (value) refs.push(value);
+    }
+    const href = attrs.get('href');
+    if (href && shouldCollectHref(tag.name, attrs)) refs.push(href);
+    const srcset = attrs.get('srcset');
+    if (srcset) {
+      for (const part of srcset.split(',')) {
+        const url = part.trim().split(/\s+/)[0];
+        if (url) refs.push(url);
+      }
     }
   }
   return refs;
@@ -240,7 +246,7 @@ export function resolveReferencedPath(raw, baseDir) {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
   if (!trimmed || trimmed.startsWith('#')) return null;
-  if (/^(?:https?:|data:|blob:|mailto:|tel:|javascript:)/i.test(trimmed)) return null;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(trimmed)) return null;
   if (trimmed.startsWith('//')) return null;
   const withoutHash = trimmed.split('#')[0];
   const withoutQuery = withoutHash.split('?')[0];
@@ -250,13 +256,13 @@ export function resolveReferencedPath(raw, baseDir) {
 }
 
 export function rewriteEntryHtmlReferences(html, baseDir) {
-  return html
-    .replace(/\b(src|href|poster)\s*=\s*(['"])(.*?)\2/gi, (_match, attr, quote, raw) => {
-      return `${attr}=${quote}${rewriteHtmlReference(raw, baseDir)}${quote}`;
-    })
-    .replace(/\bsrcset\s*=\s*(['"])(.*?)\1/gi, (_match, quote, raw) => {
-      return `srcset=${quote}${rewriteSrcset(raw, baseDir)}${quote}`;
-    });
+  const rawTextRanges = htmlRawTextRanges(html);
+  return String(html).replace(/<([A-Za-z][A-Za-z0-9:-]*)([^<>]*?)>/g, (tag, rawName, rawAttrs, offset) => {
+    if (isOffsetInRanges(offset, rawTextRanges)) return tag;
+    const tagName = String(rawName).toLowerCase();
+    const attrs = parseHtmlAttributes(rawAttrs);
+    return `<${rawName}${rewriteHtmlAttributes(rawAttrs, tagName, attrs, baseDir)}>`;
+  });
 }
 
 export function injectDeployHookScript(html, scriptUrl) {
@@ -304,6 +310,97 @@ function rewriteSrcset(raw, baseDir) {
       return [nextUrl, ...pieces.slice(1)].join(' ');
     })
     .join(', ');
+}
+
+function parseHtmlTags(html) {
+  const tags = [];
+  const rawTextRanges = htmlRawTextRanges(html);
+  const tagRe = /<([A-Za-z][A-Za-z0-9:-]*)([^<>]*?)>/g;
+  let match;
+  while ((match = tagRe.exec(String(html)))) {
+    if (isOffsetInRanges(match.index, rawTextRanges)) continue;
+    tags.push({
+      name: String(match[1]).toLowerCase(),
+      attrs: match[2] || '',
+    });
+  }
+  return tags;
+}
+
+function htmlRawTextRanges(html) {
+  const source = String(html);
+  const ranges = [];
+
+  const commentRe = /<!--[\s\S]*?-->/g;
+  let match;
+  while ((match = commentRe.exec(source))) {
+    ranges.push([match.index, match.index + match[0].length]);
+  }
+
+  const rawTagRe = /<(script|style)\b[^<>]*>/gi;
+  while ((match = rawTagRe.exec(source))) {
+    const tagName = String(match[1]).toLowerCase();
+    const contentStart = match.index + match[0].length;
+    const closeRe = new RegExp(`</${tagName}\\s*>`, 'gi');
+    closeRe.lastIndex = contentStart;
+    const close = closeRe.exec(source);
+    const contentEnd = close ? close.index : source.length;
+    if (contentEnd > contentStart) ranges.push([contentStart, contentEnd]);
+    rawTagRe.lastIndex = close ? close.index + close[0].length : source.length;
+  }
+
+  return ranges;
+}
+
+function isOffsetInRanges(offset, ranges) {
+  return ranges.some(([start, end]) => offset >= start && offset < end);
+}
+
+function parseHtmlAttributes(rawAttrs) {
+  const attrs = new Map();
+  const attrRe = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  let match;
+  while ((match = attrRe.exec(String(rawAttrs)))) {
+    attrs.set(String(match[1]).toLowerCase(), match[2] ?? match[3] ?? match[4] ?? '');
+  }
+  return attrs;
+}
+
+function rewriteHtmlAttributes(rawAttrs, tagName, attrs, baseDir) {
+  const shouldRewriteHref = shouldCollectHref(tagName, attrs);
+  return String(rawAttrs).replace(
+    /([^\s"'<>/=]+)(\s*=\s*)("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g,
+    (full, rawName, equals, rawValue, doubleQuoted, singleQuoted, unquoted) => {
+      const name = String(rawName).toLowerCase();
+      if (name !== 'src' && name !== 'poster' && name !== 'srcset' && name !== 'href') {
+        return full;
+      }
+      if (name === 'href' && !shouldRewriteHref) return full;
+
+      const value = doubleQuoted ?? singleQuoted ?? unquoted ?? '';
+      const nextValue = name === 'srcset'
+        ? rewriteSrcset(value, baseDir)
+        : rewriteHtmlReference(value, baseDir);
+      if (doubleQuoted !== undefined) return `${rawName}${equals}"${nextValue}"`;
+      if (singleQuoted !== undefined) return `${rawName}${equals}'${nextValue}'`;
+      return `${rawName}${equals}${nextValue}`;
+    },
+  );
+}
+
+function shouldCollectHref(tagName, attrs) {
+  if (tagName !== 'link') return false;
+  const rel = String(attrs.get('rel') || '').toLowerCase();
+  if (!rel) return false;
+  return rel.split(/\s+/).some((item) => (
+    item === 'stylesheet' ||
+    item === 'icon' ||
+    item === 'apple-touch-icon' ||
+    item === 'manifest' ||
+    item === 'preload' ||
+    item === 'modulepreload' ||
+    item === 'prefetch'
+  ));
 }
 
 function rewriteHtmlReference(raw, baseDir) {
