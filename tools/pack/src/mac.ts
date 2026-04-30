@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
-import { access, chmod, cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, chmod, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 
 import {
@@ -490,6 +491,31 @@ async function cleanBuilderScratchMetadata(paths: MacPaths): Promise<void> {
   );
 }
 
+async function writeLocalLatestMacYml(config: ToolPackConfig, paths: MacPaths): Promise<void> {
+  const packagedVersion = await readPackagedVersion(config);
+  const zipName = basename(paths.zipPath);
+  const zipPayload = await readFile(paths.zipPath);
+  const zipMetadata = await stat(paths.zipPath);
+  const sha512 = createHash("sha512").update(zipPayload).digest("base64");
+
+  await mkdir(dirname(paths.latestMacYmlPath), { recursive: true });
+  await writeFile(
+    paths.latestMacYmlPath,
+    [
+      `version: ${JSON.stringify(packagedVersion)}`,
+      "files:",
+      `  - url: ${JSON.stringify(zipName)}`,
+      `    sha512: ${JSON.stringify(sha512)}`,
+      `    size: ${zipMetadata.size}`,
+      `path: ${JSON.stringify(zipName)}`,
+      `sha512: ${JSON.stringify(sha512)}`,
+      `releaseDate: ${JSON.stringify(new Date().toISOString())}`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
 async function finalizeMacArtifacts(
   config: ToolPackConfig,
   paths: MacPaths,
@@ -513,13 +539,7 @@ async function finalizeMacArtifacts(
       label: "zip artifact",
       sourcePath: join(paths.appBuilderOutputRoot, `${PRODUCT_NAME}-${namespaceToken}.zip`),
     });
-    const builderLatestMacYmlPath = join(paths.appBuilderOutputRoot, "latest-mac.yml");
-    if (!(await pathExists(builderLatestMacYmlPath))) {
-      throw new Error(`zip target did not produce latest-mac.yml at ${builderLatestMacYmlPath}`);
-    }
-    await mkdir(dirname(paths.latestMacYmlPath), { recursive: true });
-    await rm(paths.latestMacYmlPath, { force: true });
-    await rename(builderLatestMacYmlPath, paths.latestMacYmlPath);
+    await writeLocalLatestMacYml(config, paths);
     latestMacYmlPath = paths.latestMacYmlPath;
   }
 
