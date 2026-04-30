@@ -15,12 +15,11 @@
     "build": "pnpm --filter @open-design/web build",
     "check:residual-js": "node --experimental-strip-types scripts/check-residual-js.ts",
     "test:e2e:live": "pnpm --filter @open-design/e2e test:e2e:live",
-    "test": "pnpm --filter @open-design/sidecar-proto test && pnpm --filter @open-design/sidecar test && pnpm --filter @open-design/platform test && pnpm --filter @open-design/web test && pnpm --filter @open-design/daemon test && pnpm --filter @open-design/e2e test",
+    "test": "pnpm -r --workspace-concurrency=1 --if-present run test",
     "test:ui:clean": "pnpm --filter @open-design/e2e test:ui:clean",
     "test:ui": "pnpm --filter @open-design/e2e test:ui",
     "test:ui:headed": "pnpm --filter @open-design/e2e test:ui:headed",
-    "typecheck": "pnpm --filter @open-design/contracts typecheck && pnpm --filter @open-design/sidecar-proto typecheck && pnpm --filter @open-design/sidecar typecheck && pnpm --filter @open-design/platform typecheck && pnpm --filter @open-design/tools-dev typecheck && pnpm --filter @open-design/desktop typecheck && pnpm --filter @open-design/web typecheck && pnpm --filter @open-design/daemon typecheck && pnpm --filter @open-design/daemon build && pnpm --filter @open-design/e2e exec tsc -p ../scripts/tsconfig.json --noEmit && pnpm --filter @open-design/e2e typecheck && pnpm check:residual-js",
-    "test:run": "pnpm run test"
+    "typecheck": "pnpm -r --workspace-concurrency=1 --if-present run typecheck && pnpm --filter @open-design/daemon build && pnpm check:residual-js"
   },
   "devDependencies": {
     "@open-design/tools-dev": "workspace:0.1.0"
