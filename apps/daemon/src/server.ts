@@ -126,9 +126,17 @@ function resolveProcessResourcesPath() {
   // Infer the macOS app Resources directory from that bundled Node path.
   const resourcesMarker = `${path.sep}Contents${path.sep}Resources${path.sep}`;
   const markerIndex = process.execPath.indexOf(resourcesMarker);
-  if (markerIndex === -1) return null;
+  if (markerIndex !== -1) {
+    return process.execPath.slice(0, markerIndex + resourcesMarker.length - 1);
+  }
 
-  return process.execPath.slice(0, markerIndex + resourcesMarker.length - 1);
+  const windowsResourceBinMarker = `${path.sep}resources${path.sep}open-design${path.sep}bin${path.sep}`;
+  const windowsMarkerIndex = process.execPath.toLowerCase().indexOf(windowsResourceBinMarker);
+  if (windowsMarkerIndex !== -1) {
+    return process.execPath.slice(0, windowsMarkerIndex + `${path.sep}resources`.length);
+  }
+
+  return null;
 }
 
 export function resolveDaemonResourceRoot({
