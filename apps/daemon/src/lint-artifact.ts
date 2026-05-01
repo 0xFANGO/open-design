@@ -28,9 +28,21 @@
  */
 
 const PURPLE_HEXES = [
+  // Tailwind violet / purple — the original AI-slop palette.
   '#a855f7', '#9333ea', '#7c3aed', '#6d28d9', '#581c87',
   '#8b5cf6', '#a78bfa', '#c4b5fd', '#ddd6fe', '#ede9fe',
+  // Tailwind indigo — Refero's #1 reported AI tell. Common solid uses
+  // (button fill, accent badge), not just gradients, are flagged
+  // separately by `ai-default-indigo` below.
+  '#6366f1', '#4f46e5', '#4338ca', '#3730a3', '#312e81',
+  '#818cf8', '#a5b4fc', '#c7d2fe', '#e0e7ff', '#eef2ff',
 ];
+
+// Subset of PURPLE_HEXES that constitute the canonical "default LLM
+// accent" — even a single solid use is a tell. The DESIGN.md provides
+// `var(--accent)`; if a brief truly needs indigo, the design system
+// should encode it explicitly so we know it's intentional.
+const AI_DEFAULT_INDIGO = ['#6366f1', '#4f46e5', '#4338ca', '#8b5cf6', '#7c3aed'];
 
 const SLOP_EMOJI = [
   '✨', '🚀', '🎯', '⚡', '🔥', '💡', '📈', '🎨', '🛡️', '🌟',
@@ -109,6 +121,27 @@ export function lintArtifact(rawHtml) {
         fix: 'Remove the gradient or swap to a single solid color from the active design tokens.',
         snippet: clip(m[0]),
       });
+    }
+  }
+
+  // ── P0-1b: solid AI-default indigo as accent ──────────────────────
+  // Even outside a gradient, a single use of #6366f1 et al. is the
+  // textbook LLM tell. We only fire if the existing purple-gradient
+  // check didn't already, since they overlap in spirit.
+  if (out.find((f) => f.id === 'purple-gradient') === undefined) {
+    for (const hex of AI_DEFAULT_INDIGO) {
+      const re = new RegExp(escapeRe(hex), 'i');
+      const m = re.exec(html);
+      if (m) {
+        out.push({
+          severity: 'P0',
+          id: 'ai-default-indigo',
+          message: `Found a default LLM accent color (${hex}) — this is the most-reported AI design tell.`,
+          fix: 'Replace with var(--accent) from the active DESIGN.md. If the brief truly requires indigo, encode it as the design system\'s accent so it reads as intentional, not default.',
+          snippet: clip(m[0]),
+        });
+        break;
+      }
     }
   }
 
@@ -201,6 +234,48 @@ export function lintArtifact(rawHtml) {
       message: 'Element.scrollIntoView() detected — yanks the host page when an iframe boundary is crossed.',
       fix: 'Use `scrollTo({ left, top, behavior: "smooth" })` on the actual scroller (see simple-deck seed for the proven pattern).',
     });
+  }
+
+  // ── P1-0: ALL-CAPS without letter-spacing ─────────────────────────
+  // Refero's typography rules: any `text-transform: uppercase` rule
+  // must pair with `letter-spacing: >= 0.06em` (or an absolute px
+  // equivalent). We scan the <style> block for an uppercase declaration
+  // inside any selector and check whether the SAME selector body
+  // declares a sufficient letter-spacing. The check is intentionally
+  // conservative — only fires when the rule body is missing
+  // letter-spacing entirely OR sets it visibly too low.
+  const styleBlock = /<style[^>]*>([\s\S]*?)<\/style>/i.exec(html);
+  if (styleBlock) {
+    const css = styleBlock[1] ?? '';
+    // Match a CSS rule body containing text-transform: uppercase.
+    // Capture the selector + body so we can inspect tracking.
+    const upperRe = /([^{}]*)\{([^}]*text-transform\s*:\s*uppercase[^}]*)\}/gi;
+    let m;
+    while ((m = upperRe.exec(css)) !== null) {
+      const selector = (m[1] ?? '').trim();
+      const body = m[2] ?? '';
+      const lsMatch =
+        /letter-spacing\s*:\s*(-?\d*\.?\d+)\s*(em|px|rem)/i.exec(body);
+      let ok = false;
+      if (lsMatch) {
+        const v = parseFloat(lsMatch[1]);
+        const unit = lsMatch[2].toLowerCase();
+        // 0.06em is the floor; in px, ~1px on a 16px line is borderline,
+        // 1.5px+ comfortably passes for typical heading sizes.
+        if (unit === 'em' || unit === 'rem') ok = v >= 0.06;
+        else if (unit === 'px') ok = v >= 1.5;
+      }
+      if (!ok) {
+        out.push({
+          severity: 'P1',
+          id: 'all-caps-no-tracking',
+          message: `Selector \`${selector.slice(0, 60)}\` sets text-transform: uppercase without sufficient letter-spacing (≥0.06em).`,
+          fix: 'Add `letter-spacing: 0.08em` (typical) to the same rule. ALL CAPS without tracking looks cramped — Refero\'s typography rules call this out as a top-tier amateur tell.',
+          snippet: clip(`${selector} { ${body.trim()} }`),
+        });
+        break;
+      }
+    }
   }
 
   // ── P1-1: external image URLs (CDN / unsplash / placehold.co) ─────

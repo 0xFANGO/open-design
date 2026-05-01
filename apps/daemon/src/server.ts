@@ -29,6 +29,7 @@ import { importClaudeDesignZip } from './claude-design-import.js';
 import { listPromptTemplates, readPromptTemplate } from './prompt-templates.js';
 import { buildDocumentPreview } from './document-preview.js';
 import { lintArtifact, renderFindingsForAgent } from './lint-artifact.js';
+import { loadCraftSections } from './craft.js';
 import { generateMedia } from './media.js';
 import {
   AUDIO_DURATIONS_SEC,
@@ -169,6 +170,11 @@ const DESIGN_SYSTEMS_DIR = resolveDaemonResourceDir(
   DAEMON_RESOURCE_ROOT,
   'design-systems',
   path.join(PROJECT_ROOT, 'design-systems'),
+);
+const CRAFT_DIR = resolveDaemonResourceDir(
+  DAEMON_RESOURCE_ROOT,
+  'craft',
+  path.join(PROJECT_ROOT, 'craft'),
 );
 const FRAMES_DIR = resolveDaemonResourceDir(
   DAEMON_RESOURCE_ROOT,
@@ -1551,12 +1557,24 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     let skillBody;
     let skillName;
     let skillMode;
+    let skillCraftRequires = [];
     if (effectiveSkillId) {
       const skill = (await listSkills(SKILLS_DIR)).find((s) => s.id === effectiveSkillId);
       if (skill) {
         skillBody = skill.body;
         skillName = skill.name;
         skillMode = skill.mode;
+        if (Array.isArray(skill.craftRequires)) skillCraftRequires = skill.craftRequires;
+      }
+    }
+
+    let craftBody;
+    let craftSections;
+    if (skillCraftRequires.length > 0) {
+      const loaded = await loadCraftSections(CRAFT_DIR, skillCraftRequires);
+      if (loaded.body) {
+        craftBody = loaded.body;
+        craftSections = loaded.sections;
       }
     }
 
@@ -1579,6 +1597,8 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
       skillMode,
       designSystemBody,
       designSystemTitle,
+      craftBody,
+      craftSections,
       metadata,
       template,
     });
