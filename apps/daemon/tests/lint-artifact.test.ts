@@ -830,4 +830,42 @@ describe('all-caps-no-tracking', () => {
     const findings = lintArtifact(html);
     expect(findings.find((f) => f.id === 'all-caps-no-tracking')).toBeDefined();
   });
+
+  it('flags an uppercase rule whose only `letter-spacing` is a custom-property declaration', () => {
+    // Regression: the previous substring regex matched
+    // `--letter-spacing: 0.08em` because it scanned the whole rule body
+    // for `letter-spacing\s*:`. Token-name declarations have no rendered
+    // effect, so the rule renders ALL CAPS without tracking and must
+    // still trip the P1 lint.
+    const html = `
+      <style>
+        .eyebrow { text-transform: uppercase; --letter-spacing: 0.08em; }
+      </style>
+      <span class="eyebrow">New</span>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'all-caps-no-tracking')).toBeDefined();
+  });
+
+  it('flags a 48px heading whose only `font-size` is a custom-property declaration and tracking is below the floor', () => {
+    // Regression: `--display-font-size: 48px` previously satisfied the
+    // bail-out branch that detected an unresolvable font-size, masking
+    // the fact that no real font-size is declared. With token names
+    // ignored, the rule falls back to the conservative >=1px floor and
+    // 0.5px tracking is correctly flagged.
+    const html = `
+      <style>
+        .display { text-transform: uppercase; --display-font-size: 48px; letter-spacing: 0.5px; }
+      </style>
+      <h1 class="display">Headline</h1>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'all-caps-no-tracking')).toBeDefined();
+  });
+
+  it('flags inline uppercase whose only `letter-spacing` is a custom-property declaration', () => {
+    const html = `<span style="text-transform: uppercase; --letter-spacing: 0.08em">NEW</span>`;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'all-caps-no-tracking')).toBeDefined();
+  });
 });

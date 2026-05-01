@@ -533,19 +533,45 @@ function escapeRe(s) {
 const ROOT_FONT_PX = 16;
 function hasAdequateUppercaseTracking(body, tokens) {
   const resolved = tokens ? resolveCssVars(body, tokens) : body;
-  const lsMatch =
-    /letter-spacing\s*:\s*(-?\d*\.?\d+)\s*(em|px|rem)/i.exec(resolved);
+  // Parse the declaration list and match exact property names so that
+  // CSS custom-property declarations (`--letter-spacing: 0.08em`,
+  // `--display-font-size: 48px`) — which are token definitions with no
+  // rendered effect — cannot satisfy the rule. The previous substring
+  // regex would mistake `--letter-spacing` for `letter-spacing` and
+  // let real violations bypass the P1 lint.
+  const decls = parseDeclarations(resolved);
+  const ls = decls.find((d) => d.prop === 'letter-spacing');
+  if (!ls) return false;
+  const lsMatch = /^(-?\d*\.?\d+)\s*(em|px|rem)\b/i.exec(ls.value);
   if (!lsMatch) return false;
   const v = parseFloat(lsMatch[1]);
   const unit = lsMatch[2].toLowerCase();
   if (unit === 'em') return v >= 0.06;
   const trackingPx = unit === 'rem' ? v * ROOT_FONT_PX : v;
-  const fsPx = resolveFontSizePx(resolved);
+  const fsPx = resolveFontSizePx(decls);
   if (fsPx != null) {
     return fsPx > 0 && trackingPx >= fsPx * 0.06;
   }
-  if (/font-size\s*:/i.test(resolved)) return false;
+  if (decls.some((d) => d.prop === 'font-size')) return false;
   return trackingPx >= 1;
+}
+
+// Split a CSS declaration body into `{ prop, value }` entries, lowercasing
+// the property name and skipping custom properties (`--name`). Used by
+// the uppercase-tracking lint so substring matches on `letter-spacing`
+// or `font-size` cannot collide with token-name declarations.
+function parseDeclarations(body) {
+  const out = [];
+  for (const raw of body.split(';')) {
+    const idx = raw.indexOf(':');
+    if (idx < 0) continue;
+    const prop = raw.slice(0, idx).trim().toLowerCase();
+    if (!prop || prop.startsWith('--')) continue;
+    const value = raw.slice(idx + 1).trim();
+    if (!value) continue;
+    out.push({ prop, value });
+  }
+  return out;
 }
 
 // Resolve a same-rule `font-size` declaration to absolute px. Returns
@@ -553,10 +579,12 @@ function hasAdequateUppercaseTracking(body, tokens) {
 // via the root font-size assumption shared with tracking); returns
 // `null` when font-size is absent OR present in an unresolvable unit
 // (`em`, `%`, `calc(...)`, an unresolved `var(--...)`). The caller
-// distinguishes those two `null` cases by re-checking for the
-// `font-size:` literal.
-function resolveFontSizePx(body) {
-  const m = /font-size\s*:\s*(-?\d*\.?\d+)\s*(px|rem)\b/i.exec(body);
+// distinguishes those two `null` cases by re-checking the parsed
+// declarations for an exact `font-size` property.
+function resolveFontSizePx(decls) {
+  const fs = decls.find((d) => d.prop === 'font-size');
+  if (!fs) return null;
+  const m = /^(-?\d*\.?\d+)\s*(px|rem)\b/i.exec(fs.value);
   if (!m) return null;
   const v = parseFloat(m[1]);
   const unit = m[2].toLowerCase();
