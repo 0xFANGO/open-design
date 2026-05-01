@@ -41,6 +41,46 @@ describe('ai-default-indigo', () => {
     const findings = lintArtifact(html);
     expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeUndefined();
   });
+
+  it('does not flag indigo declared as a token in :root and consumed via var(--accent)', () => {
+    // Brand whose accent is intentionally indigo: defines #6366f1 once
+    // in :root and uses var(--accent) downstream. This is the design
+    // system speaking, not the model defaulting — must not fire P0.
+    const html = `
+      <style>
+        :root { --accent: #6366f1; --bg: #ffffff; }
+        .cta { background: var(--accent); color: white; }
+      </style>
+      <button class="cta">Get started</button>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeUndefined();
+  });
+
+  it('still flags indigo when it appears outside :root even if also defined as a token', () => {
+    // If the artifact both defines the accent AND hard-codes the same
+    // hex in a component rule, the component rule is still raw indigo
+    // — fire as before.
+    const html = `
+      <style>
+        :root { --accent: #6366f1; }
+        .cta { background: #6366f1; color: white; }
+      </style>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeDefined();
+  });
+
+  it('does not flag indigo in :root with attribute selector (theme variants)', () => {
+    const html = `
+      <style>
+        :root[data-theme="dark"] { --accent: #6366f1; }
+        .cta { background: var(--accent); color: white; }
+      </style>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeUndefined();
+  });
 });
 
 describe('all-caps-no-tracking', () => {

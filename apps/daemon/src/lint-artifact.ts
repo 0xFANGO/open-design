@@ -127,11 +127,19 @@ export function lintArtifact(rawHtml) {
   // ── P0-1b: solid AI-default indigo as accent ──────────────────────
   // Even outside a gradient, a single use of #6366f1 et al. is the
   // textbook LLM tell. We only fire if the existing purple-gradient
-  // check didn't already, since they overlap in spirit.
+  // check didn't already, since they overlap in spirit. Strip
+  // :root token-definition blocks first: a brief whose accent is
+  // intentionally indigo declares it as `--accent: #6366f1` in
+  // :root and uses var(--accent) downstream — that is the design
+  // system speaking, not the model defaulting, and must not fire.
   if (out.find((f) => f.id === 'purple-gradient') === undefined) {
+    const htmlForIndigo = html.replace(
+      /:root(?:\[[^\]]*\])?\s*\{[^}]*\}/gi,
+      '',
+    );
     for (const hex of AI_DEFAULT_INDIGO) {
       const re = new RegExp(escapeRe(hex), 'i');
-      const m = re.exec(html);
+      const m = re.exec(htmlForIndigo);
       if (m) {
         out.push({
           severity: 'P0',
