@@ -255,7 +255,12 @@ export function lintArtifact(rawHtml) {
   outer: for (const styleBlock of html.matchAll(
     /<style[^>]*>([\s\S]*?)<\/style>/gi,
   )) {
-    const css = styleBlock[1] ?? '';
+    // Strip CSS comments before structural matching: a `<style>` body
+    // such as `/* .eyebrow { text-transform: uppercase; } */` is
+    // commented-out by the browser but the rule-shaped regex below
+    // would otherwise match it and emit a P1 finding for CSS that has
+    // no rendered effect.
+    const css = (styleBlock[1] ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
     // Match a CSS rule body containing text-transform: uppercase.
     // Capture the selector + body so we can inspect tracking.
     const upperRe = /([^{}]*)\{([^}]*text-transform\s*:\s*uppercase[^}]*)\}/gi;
@@ -488,7 +493,15 @@ function stripTokenBlocksFromCss(css) {
   // fail `isTokenShapedDeclaration`, and leave a legitimate token
   // definition in scope of the indigo scan.
   const cleaned = css.replace(/\/\*[\s\S]*?\*\//g, '');
-  return cleaned.replace(/([^{}]*)\{([^}]*)\}/g, (full, selector, body) => {
+  // The body alternation is `[^{}]*` (not `[^}]*`) so the regex matches
+  // only innermost `selector { body }` rules. That lets us recognize
+  // global token blocks nested inside at-rule wrappers — e.g.
+  // `@media (prefers-color-scheme: dark) { :root { --accent: #6366f1 } }`
+  // — by matching the inner `:root { ... }` directly. The outer
+  // `@media` wrapper is preserved with the inner token block stripped,
+  // so the indigo scan no longer fires on legitimate responsive theme
+  // declarations.
+  return cleaned.replace(/([^{}]*)\{([^{}]*)\}/g, (full, selector, body) => {
     const sel = (selector || '').trim();
     if (!selectorListIsGlobalThemeScope(sel)) return full;
     const decls = (body || '')

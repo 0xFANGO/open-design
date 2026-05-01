@@ -269,6 +269,52 @@ describe('ai-default-indigo', () => {
     expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeUndefined();
   });
 
+  it('does not flag indigo declared in a :root token block nested inside @media', () => {
+    // Regression: `stripTokenBlocksFromCss` only matched flat
+    // `selector { body }` rules, so a media-query-wrapped token block
+    // like `@media (prefers-color-scheme: dark) { :root { --accent: #6366f1 } }`
+    // had its outer `@media` rule treated as the selector/body pair and
+    // the inner `:root` token block was never stripped — producing a
+    // P0 false positive on legitimate responsive theme CSS.
+    const html = `
+      <style>
+        @media (prefers-color-scheme: dark) {
+          :root { --accent: #6366f1; --bg: #0b0b10; }
+        }
+        .cta { background: var(--accent); color: white; }
+      </style>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeUndefined();
+  });
+
+  it('does not flag indigo declared in a :root token block nested inside @supports', () => {
+    const html = `
+      <style>
+        @supports (color: oklch(0 0 0)) {
+          :root { --accent: #6366f1; }
+        }
+      </style>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeUndefined();
+  });
+
+  it('still flags indigo on a component rule nested inside @media', () => {
+    // The exemption only applies to global token blocks. A component
+    // rule that hard-codes the indigo hex inside an at-rule wrapper
+    // is still raw indigo and must fire.
+    const html = `
+      <style>
+        @media (prefers-color-scheme: dark) {
+          .cta { background: #6366f1; }
+        }
+      </style>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeDefined();
+  });
+
 });
 
 describe('all-caps-no-tracking', () => {
@@ -336,5 +382,36 @@ describe('all-caps-no-tracking', () => {
     const hit = findings.find((f) => f.id === 'all-caps-no-tracking');
     expect(hit).toBeDefined();
     expect(hit.severity).toBe('P1');
+  });
+
+  it('does not flag an uppercase rule that is entirely inside a CSS comment', () => {
+    // Regression: the scan ran against the raw <style> body, so a
+    // commented-out rule like `/* .eyebrow { text-transform: uppercase; } */`
+    // matched `upperRe` and fired a P1 even though the browser ignores it.
+    // CSS comments are stripped before structural matching now.
+    const html = `
+      <style>
+        /* .eyebrow { text-transform: uppercase; } */
+        .eyebrow { font-size: 12px; }
+      </style>
+      <span class="eyebrow">New</span>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'all-caps-no-tracking')).toBeUndefined();
+  });
+
+  it('still flags an active uppercase rule when surrounded by comments', () => {
+    // Comments are stripped only for structural matching; the live rule
+    // outside the comment must still fire.
+    const html = `
+      <style>
+        /* historical: removed in 2024 */
+        .eyebrow { text-transform: uppercase; font-size: 12px; }
+        /* trailing note */
+      </style>
+      <span class="eyebrow">New</span>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'all-caps-no-tracking')).toBeDefined();
   });
 });
