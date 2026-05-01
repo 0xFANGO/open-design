@@ -15,10 +15,12 @@ honest.
 
 These are the patterns the linter blocks at P0 (must-fix):
 
-1. **Default Tailwind indigo as accent** — `#6366f1`, `#4f46e5`,
-   `#4338ca`, `#3730a3`, `#8b5cf6`, `#a855f7`, etc. The active
+1. **Default Tailwind indigo as accent** — exactly `#6366f1`, `#4f46e5`,
+   `#4338ca`, `#3730a3`, `#8b5cf6`, `#7c3aed`, `#a855f7`. The active
    `DESIGN.md` provides `--accent`; use it. Indigo is the textbook AI
-   tell.
+   tell. (The daemon's `lint-artifact` flags any of these as a solid
+   accent; keep this list in sync with `AI_DEFAULT_INDIGO` in
+   `apps/daemon/src/lint-artifact.ts`.)
 2. **Two-stop "trust" gradient on the hero** — purple→blue, blue→cyan,
    indigo→pink. A flat surface + intentional type beats this every
    time.

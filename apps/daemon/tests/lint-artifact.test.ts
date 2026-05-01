@@ -23,6 +23,23 @@ describe('ai-default-indigo', () => {
     expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeDefined();
   });
 
+  // Regression: the AI_DEFAULT_INDIGO list used to omit `#3730a3` and
+  // `#a855f7` even though `craft/anti-ai-slop.md` documents both as
+  // P0-blocked solid accents. An artifact could hard-code one of these
+  // as a button fill and slip past the lint. The list now matches the
+  // craft doc exactly; these regression tests pin the contract.
+  it.each([
+    ['#3730a3', 'tailwind indigo-800'],
+    ['#a855f7', 'tailwind purple-500'],
+    ['#7c3aed', 'tailwind violet-600'],
+  ])('flags solid %s (%s) as a documented cardinal-sin accent', (hex) => {
+    const html = `<div style="background: ${hex}">Hi</div>`;
+    const findings = lintArtifact(html);
+    const hit = findings.find((f) => f.id === 'ai-default-indigo');
+    expect(hit).toBeDefined();
+    expect(hit.severity).toBe('P0');
+  });
+
   it('does not double-fire when purple-gradient already caught the same color', () => {
     const html = `<div style="background: linear-gradient(90deg, #6366f1, #ec4899)">Hi</div>`;
     const findings = lintArtifact(html);

@@ -42,7 +42,14 @@ const PURPLE_HEXES = [
 // accent" — even a single solid use is a tell. The DESIGN.md provides
 // `var(--accent)`; if a brief truly needs indigo, the design system
 // should encode it explicitly so we know it's intentional.
-const AI_DEFAULT_INDIGO = ['#6366f1', '#4f46e5', '#4338ca', '#8b5cf6', '#7c3aed'];
+//
+// Keep this in sync with the explicit list in `craft/anti-ai-slop.md`'s
+// "Default Tailwind indigo as accent" cardinal-sin entry — the prompt
+// contract documents the exact set the lint enforces.
+const AI_DEFAULT_INDIGO = [
+  '#6366f1', '#4f46e5', '#4338ca', '#3730a3',
+  '#8b5cf6', '#7c3aed', '#a855f7',
+];
 
 const SLOP_EMOJI = [
   '✨', '🚀', '🎯', '⚡', '🔥', '💡', '📈', '🎨', '🛡️', '🌟',
