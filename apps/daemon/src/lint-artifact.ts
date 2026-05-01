@@ -299,6 +299,43 @@ export function lintArtifact(rawHtml) {
     }
   }
 
+  // ── P1-0b: ALL-CAPS in inline style attributes ────────────────────
+  // The <style>-block scan above misses inline declarations such as
+  // `<span style="text-transform: uppercase">NEW</span>`, which the
+  // browser still renders ALL CAPS. craft/typography.md treats the
+  // tracking floor as having no exceptions, so the inline form needs
+  // the same ≥0.06em / ≥1.5px check. Only fire if the <style>-block
+  // scan above didn't already produce this id, so the agent gets a
+  // single corrective signal per artifact.
+  if (out.find((f) => f.id === 'all-caps-no-tracking') === undefined) {
+    const inlineStyleRe = /(?:^|\s)style\s*=\s*(["'])([\s\S]*?)\1/gi;
+    let im;
+    while ((im = inlineStyleRe.exec(html)) !== null) {
+      const decl = im[2] ?? '';
+      if (!/text-transform\s*:\s*uppercase/i.test(decl)) continue;
+      const lsMatch =
+        /letter-spacing\s*:\s*(-?\d*\.?\d+)\s*(em|px|rem)/i.exec(decl);
+      let ok = false;
+      if (lsMatch) {
+        const v = parseFloat(lsMatch[1]);
+        const unit = lsMatch[2].toLowerCase();
+        if (unit === 'em' || unit === 'rem') ok = v >= 0.06;
+        else if (unit === 'px') ok = v >= 1.5;
+      }
+      if (!ok) {
+        out.push({
+          severity: 'P1',
+          id: 'all-caps-no-tracking',
+          message:
+            'Inline style sets text-transform: uppercase without sufficient letter-spacing (≥0.06em).',
+          fix: 'Add `letter-spacing: 0.08em` (typical) to the same inline style. ALL CAPS without tracking looks cramped — Refero\'s typography rules call this out as a top-tier amateur tell.',
+          snippet: clip(decl.trim()),
+        });
+        break;
+      }
+    }
+  }
+
   // ── P1-1: external image URLs (CDN / unsplash / placehold.co) ─────
   // Allow data: urls and same-origin paths.
   const extImg =
@@ -538,12 +575,15 @@ function selectorListIsGlobalThemeScope(selector) {
   return parts.every(isGlobalThemeScopeSelector);
 }
 
-// Bare attribute selectors are exempted only when the attribute is one
-// of the known global-theme switches. A broader exemption would also
-// strip arbitrary component/state attribute rules
-// (e.g. `[data-variant="primary"] { --button-bg: #6366f1; }` or
-// `[aria-current="page"] { --nav-accent: #6366f1; }`), which is the
-// exact component-local indigo laundering this lint is meant to catch.
+// Attribute selectors — bare or attached to `:root`/`html`/`body` —
+// are exempted only when the attribute is one of the known
+// global-theme switches. A broader exemption would also strip
+// arbitrary component/state attribute rules
+// (e.g. `[data-variant="primary"] { --button-bg: #6366f1; }`,
+// `:root[data-variant="primary"] { --button-bg: #6366f1; }`, or
+// `html[aria-current="page"] { --nav-accent: #6366f1; }`), which
+// is the exact component-local indigo laundering this lint is
+// meant to catch.
 const GLOBAL_THEME_ATTRIBUTES = new Set([
   'data-theme',
   'data-color-scheme',
@@ -551,12 +591,18 @@ const GLOBAL_THEME_ATTRIBUTES = new Set([
 ]);
 
 function isGlobalThemeScopeSelector(s) {
-  // :root, :root[data-theme="dark"]
-  if (/^:root(?:\[[^\]]*\])?$/.test(s)) return true;
-  // html, html[data-theme="dark"]
-  if (/^html(?:\[[^\]]*\])?$/.test(s)) return true;
-  // body, body[data-theme="dark"]
-  if (/^body(?:\[[^\]]*\])?$/.test(s)) return true;
+  // :root / html / body, optionally suffixed with a single attribute
+  // selector. The bare form (no attribute) is always a global theme
+  // scope; the prefixed form is only a theme scope when the attribute
+  // names one of GLOBAL_THEME_ATTRIBUTES. A component/state attribute
+  // suffix (`:root[data-variant="primary"]`, `html[aria-current="page"]`)
+  // must keep the rule in scope of the indigo lint.
+  const tagAttr = /^(?::root|html|body)(?:\[([a-zA-Z-]+)(?:[*^$|~]?=[^\]]*)?\])?$/.exec(s);
+  if (tagAttr) {
+    const attrName = tagAttr[1];
+    if (!attrName) return true;
+    return GLOBAL_THEME_ATTRIBUTES.has(attrName.toLowerCase());
+  }
   // Bare attribute selector restricted to known global-theme switches.
   const bareAttr = /^\[([a-zA-Z-]+)(?:[*^$|~]?=[^\]]*)?\]$/.exec(s);
   if (bareAttr && GLOBAL_THEME_ATTRIBUTES.has(bareAttr[1].toLowerCase())) {

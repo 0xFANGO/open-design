@@ -228,6 +228,67 @@ describe('ai-default-indigo', () => {
     expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeDefined();
   });
 
+  it('still flags indigo on a :root prefixed with a component-attribute selector', () => {
+    // Regression: `:root[data-variant="primary"]` used to be exempted
+    // because the regex only checked the tag prefix and not the
+    // attribute name. A component/state attribute attached to `:root`
+    // is exactly the laundering pattern this lint must catch — the
+    // exemption now requires the attribute (when present) to name a
+    // known global-theme switch.
+    const html = `
+      <style>
+        :root[data-variant="primary"] { --button-bg: #6366f1; }
+      </style>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeDefined();
+  });
+
+  it('still flags indigo on an html prefixed with an aria-state attribute selector', () => {
+    const html = `
+      <style>
+        html[aria-current="page"] { --nav-accent: #6366f1; }
+      </style>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeDefined();
+  });
+
+  it('still flags indigo on a body prefixed with a component-attribute selector', () => {
+    const html = `
+      <style>
+        body[data-variant="primary"] { --button-bg: #6366f1; }
+      </style>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeDefined();
+  });
+
+  it('still exempts indigo on :root prefixed with the canonical data-theme switch', () => {
+    // Sanity check: the prefixed-attribute change must keep exempting
+    // legitimate theme-switch selectors (`:root[data-theme="dark"]`),
+    // even though the prefixed-form regex changed shape.
+    const html = `
+      <style>
+        :root[data-theme="dark"] { --accent: #6366f1; --bg: #0b0b10; }
+        .cta { background: var(--accent); color: white; }
+      </style>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeUndefined();
+  });
+
+  it('still exempts indigo on html and body prefixed with data-theme', () => {
+    const html = `
+      <style>
+        html[data-theme="dark"] { --accent: #6366f1; }
+        body[data-mode="compact"] { --bg: #0b0b10; }
+      </style>
+    `;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'ai-default-indigo')).toBeUndefined();
+  });
+
   it('still exempts indigo on a bare data-color-scheme theme block', () => {
     // The bare-attribute exemption still covers the canonical
     // global-theme switches; a token block keyed off
@@ -430,5 +491,56 @@ describe('all-caps-no-tracking', () => {
     `;
     const findings = lintArtifact(html);
     expect(findings.find((f) => f.id === 'all-caps-no-tracking')).toBeDefined();
+  });
+
+  it('flags inline style with text-transform: uppercase and no letter-spacing', () => {
+    // Regression: the rule used to scan only <style> blocks, so an
+    // artifact emitting `<span style="text-transform: uppercase">NEW</span>`
+    // produced no finding even though the rendered output is the same
+    // ALL CAPS the typography rule prohibits without tracking.
+    const html = `<span style="text-transform: uppercase">NEW</span>`;
+    const findings = lintArtifact(html);
+    const hit = findings.find((f) => f.id === 'all-caps-no-tracking');
+    expect(hit).toBeDefined();
+    expect(hit.severity).toBe('P1');
+  });
+
+  it('flags inline style with text-transform: uppercase and too-small letter-spacing', () => {
+    const html = `<span style="text-transform: uppercase; letter-spacing: 0.02em">NEW</span>`;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'all-caps-no-tracking')).toBeDefined();
+  });
+
+  it('passes inline style with text-transform: uppercase and adequate letter-spacing in em', () => {
+    const html = `<span style="text-transform: uppercase; letter-spacing: 0.08em">NEW</span>`;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'all-caps-no-tracking')).toBeUndefined();
+  });
+
+  it('passes inline style with text-transform: uppercase and adequate letter-spacing in px', () => {
+    const html = `<span style="text-transform: uppercase; letter-spacing: 2px">NEW</span>`;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'all-caps-no-tracking')).toBeUndefined();
+  });
+
+  it('flags inline style on a tag that already carries other attributes', () => {
+    // Make sure the inline-style scan handles tags whose `style` is not
+    // the first attribute. The leading-boundary anchor must not anchor
+    // to start-of-string only.
+    const html = `<span class="x" style="text-transform: uppercase">NEW</span>`;
+    const findings = lintArtifact(html);
+    expect(findings.find((f) => f.id === 'all-caps-no-tracking')).toBeDefined();
+  });
+
+  it('does not double-fire when both <style> block and inline style are offending', () => {
+    // The inline-style scan should be skipped when the <style>-block
+    // scan already produced this finding — single corrective signal.
+    const html = `
+      <style>.eyebrow { text-transform: uppercase; font-size: 12px; }</style>
+      <span style="text-transform: uppercase">NEW</span>
+    `;
+    const findings = lintArtifact(html);
+    const hits = findings.filter((f) => f.id === 'all-caps-no-tracking');
+    expect(hits.length).toBe(1);
   });
 });
