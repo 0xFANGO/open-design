@@ -390,7 +390,7 @@ async function runElectronBuilder(
     afterSign: config.signed ? macResources.notarizeHook : undefined,
     asar: false,
     buildDependenciesFromSource: false,
-    compression: "store",
+    compression: "maximum",
     directories: {
       output: paths.appBuilderOutputRoot,
     },
