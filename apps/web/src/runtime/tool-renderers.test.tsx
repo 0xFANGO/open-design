@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ToolCard } from '../components/ToolCard';
 import {
@@ -27,22 +27,20 @@ function err(content: string, id = 't1'): ToolResult {
 }
 
 describe('deriveToolStatus', () => {
-  const u = use({ x: 1 });
-
   it('returns "executing" while the run is streaming and no result has arrived', () => {
-    expect(deriveToolStatus(u, undefined, true)).toBe('executing');
+    expect(deriveToolStatus(undefined, true)).toBe('executing');
   });
 
   it('returns "inProgress" when the run died before the tool returned', () => {
-    expect(deriveToolStatus(u, undefined, false)).toBe('inProgress');
+    expect(deriveToolStatus(undefined, false)).toBe('inProgress');
   });
 
   it('returns "complete" on a clean tool result', () => {
-    expect(deriveToolStatus(u, ok('ok'), true)).toBe('complete');
+    expect(deriveToolStatus(ok('ok'), true)).toBe('complete');
   });
 
   it('returns "error" when the tool result carries isError', () => {
-    expect(deriveToolStatus(u, err('boom'), true)).toBe('error');
+    expect(deriveToolStatus(err('boom'), true)).toBe('error');
   });
 });
 
@@ -146,5 +144,19 @@ describe('ToolCard dispatch', () => {
     );
     expect(markup).toContain('data-testid="custom-bash"');
     expect(markup).not.toContain('op-bash');
+  });
+
+  it('falls back to the built-in card when a registered renderer throws', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    registerToolRenderer('Bash', () => {
+      throw new Error('boom');
+    });
+    const markup = renderToStaticMarkup(
+      <ToolCard use={use({ command: 'ls' }, 'Bash')} runStreaming={true} />,
+    );
+    expect(markup).toContain('op-bash');
+    expect(markup).toContain('ls');
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 });

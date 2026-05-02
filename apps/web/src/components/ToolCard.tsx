@@ -41,8 +41,16 @@ export function ToolCard({
   const name = use.name;
   const custom = getToolRenderer(name);
   if (custom) {
-    const node = custom(toRenderProps(use, result, runStreaming ?? false));
-    if (node !== undefined && node !== null && node !== false) return <>{node}</>;
+    // A misbehaving third-party renderer must not take down the whole
+    // assistant message — catch synchronous throws and fall through to the
+    // built-in family card. (React's own error boundaries still cover
+    // throws raised inside the returned tree once it's mounted.)
+    try {
+      const node = custom(toRenderProps(use, result, runStreaming ?? false));
+      if (node !== undefined && node !== null && node !== false) return <>{node}</>;
+    } catch (err) {
+      console.error(`[ToolCard] custom renderer for "${name}" threw; falling back`, err);
+    }
   }
   const ctx: FileToolCtx = { projectFileNames, onRequestOpenFile };
   if (name === 'TodoWrite') return <TodoCard input={use.input} />;
