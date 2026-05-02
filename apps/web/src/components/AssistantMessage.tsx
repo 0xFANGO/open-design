@@ -101,6 +101,7 @@ export function AssistantMessage({
               <ToolGroupCard
                 key={i}
                 items={b.items}
+                runStreaming={streaming}
                 projectFileNames={projectFileNames}
                 onRequestOpenFile={onRequestOpenFile}
               />
@@ -499,10 +500,12 @@ interface ToolItem {
 
 function ToolGroupCard({
   items,
+  runStreaming,
   projectFileNames,
   onRequestOpenFile,
 }: {
   items: ToolItem[];
+  runStreaming: boolean;
   projectFileNames?: Set<string>;
   onRequestOpenFile?: (name: string) => void;
 }) {
@@ -516,6 +519,7 @@ function ToolGroupCard({
       <ToolCard
         use={items[0]!.use}
         result={items[0]!.result}
+        runStreaming={runStreaming}
         projectFileNames={projectFileNames}
         onRequestOpenFile={onRequestOpenFile}
       />
@@ -545,6 +549,7 @@ function ToolGroupCard({
               key={i}
               use={it.use}
               result={it.result}
+              runStreaming={runStreaming}
               projectFileNames={projectFileNames}
               onRequestOpenFile={onRequestOpenFile}
             />
