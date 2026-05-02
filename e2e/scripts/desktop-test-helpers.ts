@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -7,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, '../..');
+const repoRoot = resolveRepoRoot(__dirname);
 const screenshotDir = path.join(os.tmpdir(), 'open-design-e2e-screenshots');
 
 export const STORAGE_KEY = 'open-design:config';
@@ -26,6 +27,20 @@ type DesktopEvalResult = {
   value?: unknown;
   error?: string;
 };
+
+function resolveRepoRoot(startDir: string): string {
+  let currentDir = startDir;
+  while (true) {
+    if (fs.existsSync(path.join(currentDir, 'package.json'))) {
+      return currentDir;
+    }
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      throw new Error(`Unable to locate repo root from ${startDir}.`);
+    }
+    currentDir = parentDir;
+  }
+}
 
 export function createDesktopHarness(name: string) {
   const namespace = `${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
