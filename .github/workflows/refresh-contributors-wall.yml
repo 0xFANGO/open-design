@@ -1,0 +1,39 @@
+name: refresh-contributors-wall
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-contributors-wall
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    name: Refresh contributors wall cache bust
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Refresh cache bust date
+        run: |
+          DATE="$(date -u +%F)"
+          perl -0pi -e "s/cache_bust=\d{4}-\d{2}-\d{2}/cache_bust=$DATE/g" \
+            README.md \
+            README.zh-CN.md \
+            README.zh-TW.md \
+            README.ko.md \
+            README.de.md \
+            README.ja-JP.md
+
+      - name: Commit changes
+        uses: stefanzweifel/git-auto-commit-action@v6
+        with:
+          commit_message: 'docs(readme): refresh contributors wall'
+          file_pattern: 'README*.md'
