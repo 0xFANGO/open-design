@@ -14,6 +14,9 @@ type FontHints = { display?: string; heading?: string; body?: string; mono?: str
 type RowStatus = 'up' | '';
 
 export function renderDesignSystemShowcase(id: string, raw: string): string {
+  if (id === 'banana-lab') return renderBananaLabShowcase(id, raw);
+  if (id === 'listenhub') return renderListenHubShowcase(id, raw);
+
   const titleMatch = /^#\s+(.+?)\s*$/m.exec(raw);
   const rawTitle = titleMatch?.[1] ?? id;
   const title = cleanTitle(rawTitle);
@@ -554,6 +557,824 @@ function featureCard(icon: string, title: string, body: string): string {
     <div class="feature-icon">${escapeHtml(icon)}</div>
     <h3>${escapeHtml(title)}</h3>
     <p>${escapeHtml(body)}</p>
+  </div>`;
+}
+
+function renderBananaLabShowcase(id: string, raw: string): string {
+  const titleMatch = /^#\s+(.+?)\s*$/m.exec(raw);
+  const productName = cleanTitle(titleMatch?.[1] ?? id);
+  const subtitle = extractSubtitle(raw) || 'AI 图片生成平台。暗黑宇宙底色，金黄主交互，品牌光谱和 AI 能力彩色光斑。';
+  const capabilityBadges = [
+    ['4K', 'Monitor', 'linear-gradient(90deg,#fbbf24,#f97316)'],
+    ['Nano Banana', 'CPU', 'linear-gradient(90deg,#fde047,#a3e635)'],
+    ['Highly Detailed', 'Scan', 'linear-gradient(90deg,#38bdf8,#67e8f9)'],
+    ['Anime', 'Sparkles', 'linear-gradient(90deg,#f472b6,#d946ef)'],
+    ['UHD', 'Image', 'linear-gradient(90deg,#818cf8,#3b82f6)'],
+    ['Lossless', 'Infinity', 'linear-gradient(90deg,#34d399,#14b8a6)'],
+    ['Portrait', 'User', 'linear-gradient(90deg,#fb7185,#fb923c)'],
+    ['Concept Art', 'Palette', 'linear-gradient(90deg,#e2e8f0,#38bdf8)'],
+  ];
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(productName)} — showcase</title>
+  <style>
+    :root {
+      --bg: #020617;
+      --fg: #f8f8f8;
+      --muted: #9a9ea8;
+      --border: rgba(255,255,255,.1);
+      --card: #1a1b2e;
+      --primary: #d4a017;
+      --primary-fg: #3d2a08;
+      --amber: #f59e0b;
+      --cyan: #00bbd0;
+      --pink: #fb64b6;
+      --sans: Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      color: var(--fg);
+      font-family: var(--sans);
+      line-height: 1.55;
+      background:
+        radial-gradient(1200px 600px at 50% -200px, oklch(0.35 0.08 300 / 0.35), transparent 70%),
+        radial-gradient(900px 500px at 50% 120%, oklch(0.62 0.16 40 / 0.16), transparent 70%),
+        radial-gradient(700px 360px at 0% 10%, oklch(0.45 0.08 250 / 0.1), transparent 60%),
+        linear-gradient(180deg, oklch(0.16 0.02 285), oklch(0.11 0.02 285));
+      -webkit-font-smoothing: antialiased;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .34;
+      background-image:
+        radial-gradient(circle at 10% 20%, rgba(255,255,255,.8) 0 1px, transparent 1.4px),
+        radial-gradient(circle at 75% 10%, rgba(255,255,255,.7) 0 1px, transparent 1.5px),
+        radial-gradient(circle at 50% 55%, rgba(255,255,255,.45) 0 1px, transparent 1.4px),
+        radial-gradient(circle at 30% 80%, rgba(255,255,255,.6) 0 1px, transparent 1.5px);
+      background-size: 180px 180px, 260px 260px, 220px 220px, 300px 300px;
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: radial-gradient(120% 120% at 50% 35%, transparent 55%, rgba(0,0,0,.22) 80%, rgba(0,0,0,.46) 100%);
+    }
+    a { color: inherit; text-decoration: none; }
+    .shell { position: relative; z-index: 1; display: grid; grid-template-columns: 256px minmax(0, 1fr); min-height: 100vh; }
+    @media (max-width: 880px) { .shell { grid-template-columns: 1fr; } .sidebar { display: none; } }
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      border-right: 1px solid #1e2336;
+      background: color-mix(in oklab, var(--bg) 75%, oklch(0.08 0 0) 25%);
+      box-shadow: 0 26px 70px rgba(0,0,0,.85);
+      backdrop-filter: blur(22px);
+      padding: 22px 14px;
+    }
+    .compact-logo { display: flex; align-items: center; gap: 8px; justify-content: center; margin-bottom: 28px; }
+    .logo-mark {
+      width: 32px;
+      height: 32px;
+      border-radius: 9px;
+      background:
+        radial-gradient(circle at 65% 35%, #ffe27a 0 18%, transparent 19%),
+        linear-gradient(135deg, #facc15, #f97316);
+      box-shadow: 0 0 28px rgba(250,204,21,.24);
+    }
+    .compact-logo span { font-size: 24px; font-weight: 600; line-height: 1.1; }
+    .lab-compact { color: var(--cyan); }
+    .nana-compact { color: var(--pink); }
+    .nav-group { display: flex; flex-direction: column; gap: 6px; }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: #e5e7eb;
+      font-size: 14px;
+    }
+    .nav-item.active { background: var(--primary); color: var(--primary-fg); font-weight: 650; }
+    .sidebar-footer { position: absolute; left: 14px; right: 14px; bottom: 18px; display: flex; flex-direction: column; gap: 10px; }
+    .subscribe {
+      border: 1px solid rgba(245,158,11,.5);
+      border-radius: 10px;
+      background: rgba(245,158,11,.1);
+      color: var(--amber);
+      padding: 10px 12px;
+      text-align: center;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .benefit {
+      position: relative;
+      overflow: hidden;
+      border: 2px solid transparent;
+      border-radius: 14px;
+      background:
+        linear-gradient(135deg,#0a0e1a,#0f1629,#0a0e1a) padding-box,
+        linear-gradient(90deg,#00bbd0,#fb64b6,#00bbd0) border-box;
+      padding: 12px;
+      color: #fff;
+      box-shadow: 0 0 28px rgba(0,187,208,.18), 0 0 34px rgba(251,100,182,.14);
+    }
+    .benefit strong {
+      background: linear-gradient(90deg,#00bbd0,#fb64b6,#00bbd0);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .main { min-width: 0; }
+    .topbar {
+      display: none;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid var(--border);
+      background: rgba(2,6,23,.8);
+      backdrop-filter: blur(14px);
+      padding: 12px 18px;
+    }
+    @media (max-width: 880px) { .topbar { display: flex; justify-content: space-between; align-items: center; } }
+    .content { max-width: 1400px; margin: 0 auto; padding: 46px 24px 82px; }
+    .hero { max-width: 920px; margin: 0 auto 34px; text-align: center; }
+    .hero h1 { margin: 0 0 14px; font-size: clamp(62px, 10vw, 104px); line-height: .96; letter-spacing: 0; font-weight: 800; }
+    .lab {
+      background: linear-gradient(90deg,#22d3ee,#60a5fa,#a78bfa);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .nana { color: #f472b6; }
+    .powered {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin: 4px 0 24px;
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 999px;
+      background: rgba(255,255,255,.05);
+      padding: 8px 14px;
+      color: var(--muted);
+      font-size: 13px;
+      backdrop-filter: blur(12px);
+    }
+    .lede { max-width: 70ch; margin: 0 auto 24px; color: #cbd5e1; font-size: 17px; }
+    .badge-cloud { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+    .capability { position: relative; display: inline-flex; }
+    .capability::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: var(--glow);
+      opacity: .55;
+      filter: blur(12px);
+      transition: opacity .25s ease;
+    }
+    .capability:hover::before { opacity: .82; }
+    .capability span {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid rgba(255,255,255,.2);
+      border-radius: 999px;
+      background: rgba(0,0,0,.8);
+      padding: 7px 11px;
+      color: #f8fafc;
+      font-size: 12px;
+      font-weight: 600;
+      box-shadow: 0 12px 24px rgba(0,0,0,.26);
+      backdrop-filter: blur(10px);
+    }
+    .capability i {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: var(--glow);
+      color: #020617;
+      font-size: 9px;
+      font-style: normal;
+      font-weight: 800;
+    }
+    .generator {
+      position: sticky;
+      top: 18px;
+      z-index: 5;
+      max-width: 860px;
+      margin: 34px auto 42px;
+      overflow: hidden;
+      border: 1px solid rgba(148,163,184,.38);
+      border-radius: 24px;
+      background: color-mix(in oklab, var(--card) 75%, oklch(0.08 0 0) 25%);
+      box-shadow: 0 22px 60px rgba(0,0,0,.7);
+      backdrop-filter: blur(16px);
+      padding: 14px;
+    }
+    .generator::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(160% 200% at 50% 0, rgba(255,255,255,.16), transparent 55%),
+        linear-gradient(135deg, rgba(251,113,133,.2), transparent 28%, transparent 72%, rgba(56,189,248,.18));
+      mix-blend-mode: screen;
+    }
+    .generator > * { position: relative; }
+    .prompt {
+      min-height: 104px;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 14px;
+      background: rgba(2,6,23,.45);
+      padding: 16px;
+      color: #e5e7eb;
+      text-align: left;
+    }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+    .tool {
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 8px;
+      background: rgba(255,255,255,.04);
+      padding: 7px 10px;
+      color: #f8fafc;
+      font-size: 12px;
+    }
+    .generate {
+      margin-left: auto;
+      border: none;
+      border-radius: 9px;
+      background: var(--primary);
+      color: var(--primary-fg);
+      padding: 9px 14px;
+      font-weight: 800;
+      font-size: 13px;
+      box-shadow: 0 10px 26px rgba(212,160,23,.2);
+    }
+    .gallery { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+    @media (max-width: 1080px) { .gallery { grid-template-columns: repeat(3, 1fr); } }
+    @media (max-width: 720px) { .gallery { grid-template-columns: repeat(2, 1fr); } }
+    .image-card {
+      min-height: 270px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(0,0,0,.7);
+      position: relative;
+    }
+    .image-card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: var(--art);
+      opacity: .9;
+    }
+    .image-card::after {
+      content: "";
+      position: absolute;
+      inset: auto 0 0;
+      height: 44%;
+      background: linear-gradient(to top, #000, rgba(0,0,0,.72), transparent);
+    }
+    .image-meta {
+      position: absolute;
+      z-index: 1;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      color: #fff;
+      font-size: 12px;
+    }
+    .avatar { width: 26px; height: 26px; border-radius: 999px; border: 1px solid rgba(255,255,255,.2); background: rgba(255,255,255,.18); }
+    .favorite { color: #facc15; font-size: 16px; }
+    .pricing { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 56px; }
+    @media (max-width: 920px) { .pricing { grid-template-columns: 1fr; } }
+    .plan {
+      border: 1px solid #333;
+      border-radius: 24px;
+      background: transparent;
+      padding: 24px;
+    }
+    .plan.standard { border-color: #747fae; background: linear-gradient(180deg,#111527,#333950); }
+    .plan.pro { border-color: #c1a37a; background: linear-gradient(180deg,#241b0e,#45351e); }
+    .popular {
+      display: inline-flex;
+      border-radius: 12px;
+      background: #6f522a;
+      color: #efb100;
+      padding: 3px 10px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .plan h3 { margin: 8px 0 14px; font-size: 22px; }
+    .price { font-size: 38px; font-weight: 800; }
+    .plan p, .plan li { color: #cbd5e1; font-size: 14px; }
+    .plan ul { padding-left: 18px; }
+    .plan .choose {
+      display: block;
+      margin-top: 18px;
+      border-radius: 12px;
+      background: #fff;
+      color: #020617;
+      padding: 12px;
+      text-align: center;
+      font-weight: 700;
+    }
+    .plan.pro .choose { background: var(--primary); color: var(--primary-fg); }
+    .section-title { margin: 0 0 8px; font-size: 28px; }
+    .section-lede { margin: 0; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="compact-logo"><span class="logo-mark"></span><span><span class="lab-compact">Lab</span><span class="nana-compact">nana</span></span></div>
+      <nav class="nav-group">
+        <a class="nav-item active">⌂ Home</a>
+        <a class="nav-item">▧ Library</a>
+        <a class="nav-item">★ Favorites</a>
+        <a class="nav-item">◉ Explore</a>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="benefit"><strong>Premium Benefit</strong><br /><span style="font-size:12px;color:#cbd5e1;">cyan/pink neon card</span></div>
+        <a class="subscribe">⚡ Subscribe</a>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div class="compact-logo" style="margin:0;"><span class="logo-mark"></span><span><span class="lab-compact">Lab</span><span class="nana-compact">nana</span></span></div>
+        <a class="subscribe" style="padding:7px 10px;">Subscribe</a>
+      </header>
+      <div class="content">
+        <section class="hero">
+          <h1><span class="lab">Lab</span><span class="nana">nana</span></h1>
+          <div class="powered">🍌 Powered by Google Nano Banana</div>
+          <p class="lede">${escapeHtml(subtitle)}</p>
+          <div class="badge-cloud">
+            ${capabilityBadges.map(([label, icon, gradient]) => `<span class="capability" style="--glow:${gradient};"><span><i>${escapeHtml(icon.slice(0, 1))}</i>${escapeHtml(label)}</span></span>`).join('')}
+          </div>
+        </section>
+
+        <section class="generator">
+          <div class="prompt">A glassy AI image lab in deep space, golden generation controls, colorful model capability lights, premium neon accents.</div>
+          <div class="toolbar">
+            <span class="tool">✨ GPT-Image-2 <span style="color:#34d399;">Free</span></span>
+            <span class="tool">🍌 Nano Banana</span>
+            <span class="tool">4K <span style="color:#f59e0b;">VIP</span></span>
+            <span class="tool">1:1</span>
+            <button class="generate">✦ Generate</button>
+          </div>
+        </section>
+
+        <section>
+          <h2 class="section-title">Generated image gallery</h2>
+          <p class="section-lede">Image cards stay quiet and black so the generated artwork becomes the color field.</p>
+          <div class="gallery" style="margin-top:18px;">
+            ${galleryCard('linear-gradient(135deg,#fbbf24,transparent 34%),linear-gradient(315deg,#60a5fa,transparent 36%),linear-gradient(180deg,#111827,#020617)')}
+            ${galleryCard('radial-gradient(circle at 30% 18%,#f472b6,transparent 28%),linear-gradient(135deg,#0f172a,#020617)')}
+            ${galleryCard('linear-gradient(135deg,#34d399,transparent 30%),linear-gradient(315deg,#a78bfa,transparent 34%),#020617')}
+            ${galleryCard('radial-gradient(circle at 70% 24%,#facc15,transparent 24%),linear-gradient(145deg,#1f2937,#020617)')}
+          </div>
+        </section>
+
+        <section class="pricing">
+          ${bananaPlan('Free', '$0', 'Transparent base card', ['Basic generation', 'Community gallery', 'Limited credits'], '')}
+          ${bananaPlan('Standard', '$12', 'Blue-gray deep card', ['More credits', 'Private images', '2K options'], 'standard')}
+          ${bananaPlan('Pro', '$29', 'Gold recommended card', ['4K generation', 'Batch images', 'Priority models'], 'pro')}
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>`;
+}
+
+function renderListenHubShowcase(id: string, raw: string): string {
+  const titleMatch = /^#\s+(.+?)\s*$/m.exec(raw);
+  const productName = cleanTitle(titleMatch?.[1] ?? id);
+  const subtitle = extractSubtitle(raw) || 'AI audio and content creation platform. Light Mars workspace, black primary controls, tri-color brand gradients, and content-first audio surfaces.';
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(productName)} — showcase</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #101010;
+      --primary: #000000;
+      --primary-fg: #ffffff;
+      --muted: #666666;
+      --subtle: #999999;
+      --border: #eaeaea;
+      --surface: #f6f6f6;
+      --brand-purple: #6648ff;
+      --orange: #ff8e43;
+      --pink: #ff58b4;
+      --sky: #3aadff;
+      --soft-orange: #fca76f;
+      --soft-pink: #ed8fe5;
+      --soft-blue: #7ebdea;
+      --blue: #3574e3;
+      --pink-100: #ffd3e8;
+      --pink-900: #ea378c;
+      --purple-100: #e2ddff;
+      --purple-900: #6f61c3;
+      --green-100: #92e5ba;
+      --green-900: #38BC78;
+      --blue-100: #b8d2ff;
+      --radio-red: #c91133;
+      --radio-gold: #e2a76f;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --ddin: D-DIN-Bold, "SF Pro Text", -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--fg); font-family: var(--sans); line-height: 1.5; -webkit-font-smoothing: antialiased; }
+    a { color: inherit; text-decoration: none; }
+    .shell { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 100vh; background: #fff; }
+    @media (max-width: 900px) { .shell { grid-template-columns: 1fr; } .sidebar { display: none; } }
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .side-head { height: 48px; display: flex; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--border); }
+    .logo { display: flex; align-items: center; gap: 8px; font-weight: 800; letter-spacing: 0; }
+    .logo-mark { width: 22px; height: 22px; border-radius: 7px; background: #000; position: relative; }
+    .logo-mark::after { content: ""; position: absolute; inset: 5px 4px; border-radius: 999px; background: linear-gradient(90deg,#fca76f,#ed8fe5,#7ebdea); }
+    .nav { padding: 16px; display: flex; flex-direction: column; gap: 2px; }
+    .nav-item { height: 40px; display: flex; align-items: center; gap: 9px; border-radius: 8px; padding: 0 12px; color: var(--muted); font-size: 15px; }
+    .nav-item.active { background: #fff; color: #000; font-weight: 600; }
+    .nav-dot { width: 18px; height: 18px; border-radius: 6px; background: currentColor; opacity: .58; }
+    .side-footer { margin-top: auto; border-top: 1px solid var(--border); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .refer { border: 1px solid var(--border); border-radius: 12px; background: #fff; padding: 12px; color: var(--muted); font-size: 13px; }
+    .refer strong { display: block; color: #000; font-size: 14px; margin-bottom: 2px; }
+    .main { min-width: 0; padding-bottom: 88px; }
+    .mobile-bar { display: none; height: 52px; align-items: center; justify-content: space-between; padding: 0 16px; border-bottom: 1px solid var(--border); background: #fff; position: sticky; top: 0; z-index: 20; }
+    @media (max-width: 900px) { .mobile-bar { display: flex; } }
+    .container { max-width: 1180px; margin: 0 auto; padding: 42px 24px 90px; }
+    .hero { display: flex; flex-direction: column; align-items: center; gap: 24px; padding: 24px 0 48px; text-align: center; }
+    .welcome { display: inline-flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; background: #fff; box-shadow: 0 4px 16px rgba(0,0,0,.04); }
+    h1 { margin: 0; max-width: 760px; font-size: clamp(34px, 6vw, 72px); line-height: 1.08; font-weight: 800; letter-spacing: 0; }
+    .hero-welcome { font-size: 24px; line-height: 28px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+    .hero-create { font-size: 30px; line-height: 36px; font-weight: 600; margin-bottom: 24px; }
+    .subtitle { margin: 0; max-width: 620px; color: var(--muted); font-size: 17px; }
+    .creator { width: min(720px, 100%); border: 1px solid var(--border); border-radius: 20px; background: #fff; padding: 16px; box-shadow: 0 4px 30px rgba(0,0,0,.08); text-align: left; }
+    .creator-text { height: 72px; color: #808080; font-size: 15px; line-height: 22px; }
+    .creator-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+    .submit { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 8px; background: #000; color: #fff; font-weight: 800; }
+    .product-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 16px; width: min(720px, 100%); }
+    @media (max-width: 600px) { .product-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; } }
+    .product-btn {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: #fff;
+      padding: 14px;
+      transition: background .15s ease;
+    }
+    .product-btn:hover { background: var(--surface); }
+    .product-icon { width: 48px; height: 48px; border-radius: 6px; display: grid; place-items: center; font-weight: 800; font-size: 16px; flex-shrink: 0; }
+    .product-title { font-size: 15px; font-weight: 600; }
+    .product-desc { color: var(--muted); font-size: 13px; }
+    .section-head { display: flex; justify-content: space-between; gap: 20px; align-items: end; margin-bottom: 18px; }
+    .section-head h2 { margin: 0; font-size: 22px; line-height: 30px; font-weight: 650; }
+    .section-head p { margin: 8px 0 0; color: var(--muted); max-width: 560px; font-size: 15px; }
+    .try { display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: #000; color: #fff; padding: 11px 28px; font-size: 14px; font-weight: 650; white-space: nowrap; }
+    .grid-podcast { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+    @media (max-width: 1020px) { .grid-podcast { grid-template-columns: repeat(2,1fr); } }
+    @media (max-width: 560px) { .grid-podcast { grid-template-columns: 1fr; } }
+    .podcast {
+      position: relative;
+      min-height: 260px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--art);
+      box-shadow: 0 0 16px rgba(0,0,0,.04);
+      transition: transform .2s ease, box-shadow .2s ease;
+    }
+    .podcast:hover { transform: scale(1.05); box-shadow: 0 14px 30px rgba(0,0,0,.12); }
+    .podcast::after { content: ""; position: absolute; inset: auto 0 0; height: 46%; background: linear-gradient(to top, rgba(0,0,0,.9), rgba(0,0,0,.36), transparent); backdrop-filter: blur(8px); }
+    .podcast-meta { position: absolute; z-index: 1; left: 12px; right: 12px; bottom: 12px; color: #fff; }
+    .podcast-title { display: flex; align-items: center; gap: 8px; font-size: 15px; line-height: 20px; font-weight: 650; }
+    .play-mini { margin-left: auto; width: 28px; height: 28px; border-radius: 999px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.5); }
+    .podcast-sub { display: flex; gap: 7px; color: rgba(255,255,255,.8); font-size: 12px; margin-top: 10px; }
+    .slides-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    @media (max-width: 760px) { .slides-grid { grid-template-columns: 1fr; } }
+    .slide-card { position: relative; min-height: 250px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--art); transition: transform .2s ease, box-shadow .2s ease; }
+    .slide-card:hover { transform: scale(1.03); box-shadow: 0 14px 30px rgba(0,0,0,.12); }
+    .slide-play { position: absolute; right: 16px; bottom: 16px; width: 38px; height: 38px; border-radius: 999px; background: rgba(0,0,0,.3); color: #fff; display: grid; place-items: center; backdrop-filter: blur(10px); }
+    .experience { margin-top: 64px; border: 1px solid #fff; border-radius: 16px; background: rgba(255,255,255,.4); padding: 24px; backdrop-filter: blur(4px); }
+    .tabs { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin-bottom: 16px; }
+    @media (max-width: 700px) { .tabs { grid-template-columns: repeat(2,1fr); } }
+    .tab { height: 44px; border: 1px solid rgba(0,0,0,.1); border-radius: 8px; display:flex; align-items:center; justify-content:center; gap:8px; color:var(--muted); font-size:14px; }
+    .tab.active { color:#000; background:#fff; }
+    .demo-panel { border-radius: 12px; background: #fff; min-height: 250px; display:grid; place-items:center; padding:24px; }
+    .wave { width: min(420px,100%); height: 64px; display:flex; gap:5px; align-items:center; justify-content:center; }
+    .wave span { width: 6px; border-radius:999px; background: linear-gradient(180deg,#fca76f,#ed8fe5,#7ebdea); }
+    .pricing { margin-top: 64px; }
+    .pricing-header { text-align:center; margin-bottom:24px; }
+    .pricing-header h2 { margin:0; font-size:28px; font-weight:700; }
+    .pricing-header .gradient-title { font-size:34px; font-weight:700; background:linear-gradient(90deg,#ff8e43,#ff58b4,#3aadff); -webkit-background-clip:text; background-clip:text; color:transparent; }
+    .pricing-header .powered { margin-top:8px; color:var(--muted); font-size:14px; }
+    .pricing-header .powered strong { color:#000; font-weight:500; }
+    .duration-tabs { display:flex; justify-content:center; gap:4px; margin:16px auto 24px; background:var(--surface); border-radius:999px; padding:4px; width:fit-content; }
+    .duration-tab { padding:8px 20px; border-radius:999px; font-size:14px; font-weight:500; color:var(--muted); }
+    .duration-tab.active { background:#fff; color:#000; outline:1px solid var(--border); box-shadow:0 4px 30px rgba(0,0,0,.08); }
+    .duration-badge { display:inline-flex; margin-left:6px; border-radius:999px; background:#000; color:#fff; padding:2px 8px; font-size:12px; font-weight:500; }
+    .plan-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:16px; }
+    @media (max-width: 900px) { .plan-grid { grid-template-columns: 1fr; } }
+    .plan { border:1px solid rgba(153,153,153,.2); border-radius:26px; background:#fff; padding:24px; display:flex; flex-direction:column; }
+    .plan-featured-wrap { border-radius:26px; padding:2px; background:linear-gradient(151.66deg,#fca76f 1.24%,#ed8fe5 48.81%,#7ebdea 96.1%); }
+    .plan-featured-wrap .plan { border:none; background:linear-gradient(154.3deg,#fffaf6 2.06%,#fff5fe 50.52%,#f5fbff 98.18%); }
+    .plan-head { display:flex; align-items:center; justify-content:space-between; }
+    .plan h3 { margin:0; font-size:22px; line-height:30px; font-weight:500; }
+    .plan-badge { display:inline-flex; align-items:center; height:24px; border-radius:999px; background:#000; color:#fff; padding:0 10px; font-size:12px; font-weight:500; }
+    .plan-price { margin-top:16px; display:flex; align-items:baseline; gap:4px; }
+    .plan-price .strikethrough { font-family:var(--ddin); font-size:17px; color:var(--subtle); text-decoration:line-through; opacity:.5; }
+    .plan-price .amount { font-family:var(--ddin); font-size:38px; line-height:1; }
+    .plan-price .dollar { font-size:17px; }
+    .plan-price .period { color:var(--subtle); font-size:14px; margin-left:2px; }
+    .plan-yearly { color:var(--subtle); font-size:13px; margin-top:4px; }
+    .credits-box { margin-top:16px; height:58px; border:1px solid var(--border); border-radius:12px; padding:0 12px; display:flex; align-items:center; gap:8px; }
+    .credits-box .credits-num { font-family:var(--ddin); font-size:16px; }
+    .credits-box .credits-label { font-size:14px; }
+    .credits-box .credits-detail { color:var(--subtle); font-size:12px; margin-left:auto; }
+    .plan-cta { display:block; margin-top:16px; height:48px; border-radius:12px; background:#000; color:#fff; text-align:center; line-height:48px; font-size:15px; font-weight:500; }
+    .plan-cta.outline { background:transparent; border:1px solid var(--border); color:#000; }
+    .plan-rights-intro { margin-top:16px; color:var(--muted); font-size:14px; }
+    .plan-rights { margin-top:10px; display:flex; flex-direction:column; gap:10px; list-style:none; padding:0; }
+    .plan-rights li { display:flex; align-items:flex-start; gap:6px; font-size:14px; line-height:20px; }
+    .plan-rights li::before { content:"✓"; flex-shrink:0; font-size:14px; color:#333; }
+    .promise-badges { display:flex; justify-content:center; gap:16px; margin-top:20px; color:var(--subtle); font-size:14px; }
+    .promise-badges span { display:flex; align-items:center; gap:4px; }
+    .enterprise-bar { margin-top:16px; display:flex; align-items:center; gap:12px; border:1px solid var(--border); border-radius:12px; padding:0 16px; height:60px; }
+    .enterprise-bar .ent-icon { width:26px; height:26px; border-radius:6px; background:var(--surface); display:grid; place-items:center; font-size:14px; }
+    .enterprise-bar .ent-info { flex:1; }
+    .enterprise-bar .ent-title { font-size:15px; font-weight:600; }
+    .enterprise-bar .ent-desc { color:var(--muted); font-size:13px; }
+    .enterprise-bar .ent-btn { border:1px solid var(--border); border-radius:8px; padding:8px 16px; font-size:14px; font-weight:600; }
+    .faq { margin-top:48px; max-width:800px; margin-left:auto; margin-right:auto; }
+    .faq h2 { text-align:center; font-size:22px; font-weight:700; margin-bottom:16px; }
+    .faq-item { border-bottom:1px solid var(--border); padding:16px 0; display:flex; justify-content:space-between; align-items:center; font-size:17px; font-weight:500; }
+    .faq-item .chevron { color:var(--subtle); font-size:14px; }
+    .radio-fragment { margin-top:64px; border-radius:24px; background: linear-gradient(180deg,#fff9ef,#feedd3); padding:28px; }
+    .radio-card { max-width:760px; margin:0 auto; border:3px solid var(--radio-red); border-radius:16px; background:linear-gradient(180deg,#fff,#f5f5f5); padding:24px; box-shadow:0 10px 22px rgba(0,0,0,.1), inset 0 -5px 7px #fff, inset 0 5px 0 rgba(255,255,255,.99); }
+    .radio-head { display:flex; justify-content:space-between; align-items:center; gap:14px; }
+    .onair { display:inline-flex; border:2px solid #000; border-radius:33px; background:#ffecd2; color:#f63155; padding:6px 16px; font-weight:800; box-shadow: inset 0 3px 5.3px #fff6ef, inset 0 0 16px rgba(255,98,0,.3); }
+    .radio-title { color:var(--radio-red); font-size:34px; font-weight:800; }
+    .radio-list { margin-top:18px; border:1px solid rgba(245,160,80,.3); border-radius:8px; background:linear-gradient(180deg,#fff8ee,#fffdfa); overflow:hidden; }
+    .radio-row { height:40px; display:flex; align-items:center; justify-content:space-between; padding:0 12px; color:#555; border-bottom:1px solid rgba(201,17,51,.18); }
+    .radio-row.active { background:#fff4e3; color:#000; font-weight:650; border-bottom-color:var(--radio-red); }
+    .radio-controls { display:flex; justify-content:center; align-items:center; gap:14px; margin-top:18px; }
+    .radio-control { width:38px; height:38px; border-radius:999px; border:1px solid var(--radio-gold); color:var(--radio-gold); display:grid; place-items:center; }
+    .radio-play { width:100px; height:38px; border-radius:24px; border:1px solid var(--radio-gold); background:var(--radio-red); color:#fff; display:grid; place-items:center; }
+    .player {
+      position: fixed;
+      left: 240px;
+      right: 0;
+      bottom: 0;
+      z-index: 30;
+      height: 96px;
+      border-top: 1px solid var(--border);
+      background: #fff;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      gap:24px;
+      box-shadow: 0 -4px 16px rgba(0,0,0,.04);
+    }
+    @media (max-width: 900px) { .player { left:0; height:56px; padding:0 12px; } .player .time { display:none; } }
+    .player-cover { width:40px; height:40px; border-radius:8px; background:linear-gradient(135deg,#333,#999); }
+    .player-meta { width:min(400px,40vw); }
+    .player-title { font-size:12px; font-weight:650; text-align:center; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+    .seek { display:flex; align-items:center; gap:8px; margin-top:7px; }
+    .time { width:32px; text-align:center; color:var(--subtle); font-size:12px; }
+    .seekbar { flex:1; height:4px; border-radius:999px; background:#eaeaea; overflow:hidden; }
+    .seekbar span { display:block; width:62%; height:100%; background:#000; }
+    .player-button { width:36px; height:36px; border-radius:999px; background:#000; color:#fff; display:grid; place-items:center; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="side-head"><div class="logo"><span class="logo-mark"></span>${escapeHtml(productName)}</div></div>
+      <nav class="nav">
+        <a class="nav-item active"><span class="nav-dot"></span>Home</a>
+        <a class="nav-item"><span class="nav-dot"></span>Library</a>
+        <a class="nav-item"><span class="nav-dot"></span>Explore</a>
+        <a class="nav-item"><span class="nav-dot"></span>Voice Cloning</a>
+        <a class="nav-item"><span class="nav-dot"></span>AI Image</a>
+      </nav>
+      <div class="side-footer">
+        <div class="refer"><strong>Refer a friend</strong>Share credits for the next podcast episode.</div>
+        <a class="nav-item" style="color:#6f61c3;font-size:13px;font-weight:600;height:36px;"><span class="nav-dot" style="background:#6f61c3;"></span>Upgrade to Pro</a>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="mobile-bar"><div class="logo"><span class="logo-mark"></span>${escapeHtml(productName)}</div><span style="font-weight:800;">☰</span></header>
+      <div class="container">
+        <section class="hero">
+          <div class="hero-welcome">Hi 👋</div>
+          <div class="hero-create">Create anything with AI production tools</div>
+          <div class="product-grid">
+            <a class="product-btn"><span class="product-icon" style="background:rgba(255,211,232,.8);color:#ea378c;">▶</span><div><div class="product-title">Explainer Video</div><div class="product-desc">Video from text</div></div></a>
+            <a class="product-btn"><span class="product-icon" style="background:rgba(255,211,232,.8);color:#ea378c;">▤</span><div><div class="product-title">Slides</div><div class="product-desc">AI presentation</div></div></a>
+            <a class="product-btn"><span class="product-icon" style="background:rgba(226,221,255,.8);color:#6f61c3;">◉</span><div><div class="product-title">AI Podcast</div><div class="product-desc">Multi-speaker audio</div></div></a>
+            <a class="product-btn"><span class="product-icon" style="background:rgba(226,221,255,.8);color:#6f61c3;">♪</span><div><div class="product-title">Text To Speech</div><div class="product-desc">Narration</div></div></a>
+            <a class="product-btn"><span class="product-icon" style="background:rgba(146,229,186,.8);color:#38BC78;">◻</span><div><div class="product-title">AI Image</div><div class="product-desc">Generate images</div></div></a>
+            <a class="product-btn"><span class="product-icon" style="background:rgba(146,229,186,.8);color:#38BC78;">⎗</span><div><div class="product-title">Voice Cloning</div><div class="product-desc">Clone voice</div></div></a>
+          </div>
+        </section>
+
+        <section style="margin-top:32px;">
+          <div class="section-head">
+            <div><h2>Gallery</h2></div>
+          </div>
+          <div class="tabs" style="max-width:480px;">
+            <div class="tab active">Explainer Video</div>
+            <div class="tab">Slides</div>
+            <div class="tab">Podcast</div>
+            <div class="tab">AI Image</div>
+          </div>
+
+        <section>
+          <div class="section-head">
+            <div><h2>AI Podcast</h2><p>Content cards stay visual-first: full-bleed covers, progressive blur, and compact playback metadata.</p></div>
+            <a class="try">Try it out</a>
+          </div>
+          <div class="grid-podcast">
+            ${listenPodcastCard('linear-gradient(135deg,#101010,#666),radial-gradient(circle at 70% 20%,#fca76f,transparent 28%)', 'Morning product briefing')}
+            ${listenPodcastCard('linear-gradient(135deg,#20304a,#0f172a),radial-gradient(circle at 30% 24%,#7ebdea,transparent 32%)', 'Research voices')}
+            ${listenPodcastCard('linear-gradient(135deg,#3b1838,#111),radial-gradient(circle at 60% 26%,#ed8fe5,transparent 30%)', 'Founder interview')}
+            ${listenPodcastCard('linear-gradient(135deg,#1f2937,#000),radial-gradient(circle at 24% 22%,#38bc78,transparent 28%)', 'Learning queue')}
+          </div>
+        </section>
+
+        <section style="margin-top:64px;">
+          <div class="section-head">
+            <div><h2>Storybook and Slides</h2><p>Wide cards use quiet borders and translucent play controls so generated visuals carry the section.</p></div>
+            <a class="try">Try it out</a>
+          </div>
+          <div class="slides-grid">
+            ${listenSlideCard('linear-gradient(135deg,#f5fbff,#fff5fe),radial-gradient(circle at 18% 20%,#7ebdea,transparent 34%),radial-gradient(circle at 82% 70%,#ed8fe5,transparent 30%)')}
+            ${listenSlideCard('linear-gradient(135deg,#fffaf6,#f5fbff),radial-gradient(circle at 28% 30%,#fca76f,transparent 34%),radial-gradient(circle at 82% 68%,#3aadff,transparent 30%)')}
+          </div>
+        </section>
+
+        <section class="experience">
+          <div class="tabs">
+            <div class="tab active">AI Podcast</div>
+            <div class="tab">FlowSpeech</div>
+            <div class="tab">Storybook</div>
+            <div class="tab">Voice Cloning</div>
+          </div>
+          <div class="demo-panel">
+            <div>
+              <h2 style="margin:0 0 14px;text-align:center;">FlowSpeech conversation demo</h2>
+              <div class="wave">${[24,42,30,56,36,62,28,48,34,58,26,44,30,52,38,60].map((h) => `<span style="height:${h}px"></span>`).join('')}</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="pricing">
+          <div class="pricing-header">
+            <h2>升级订阅方案</h2>
+            <div class="gradient-title">创作效率提升 120 倍</div>
+            <div class="powered">由业界顶尖模型驱动 &nbsp; <strong>Gemini 3.1</strong> &nbsp; <strong>Nano Banana 2</strong> &nbsp; <strong>ElevenLabs</strong></div>
+          </div>
+          <div class="duration-tabs">
+            <span class="duration-tab">连续包月</span>
+            <span class="duration-tab active">连续包年 <span class="duration-badge">立减 20%</span></span>
+          </div>
+          <div class="plan-grid">
+            ${listenPlan('Free', null, '$0', null, '10', '2 分钟 · 0 个 · 0 张', ['每日签到：1 次专属模型免费生成', '部分功能可用', 'API & Agent Skills 使用权限'], false, true)}
+            ${listenPlan('Basic', '$12', '$9', '$108/年', '1300', '5 小时 · 9 个 · 87 张', ['每日签到：15 通用积分 + 1 次专属模型免费生成', '支持 1 个音色克隆', '解锁 2K 高清生图', '脚本编辑', '导出音频、视频、PPT 等格式', '移除 ListenHub 品牌元素'], false, false)}
+            ${listenPlan('Pro', '$24', '$19', '$228/年', '2700', '10 小时 · 18 个 · 180 张', ['每日签到：15 通用积分 + 1 次专属模型免费生成', '支持 4 个音色克隆', '解锁 4K 高清生图'], true, false)}
+            ${listenPlan('Max', '$240', '$200', '$2400/年', '30000', '111 小时 · 200 个 · 2000 张', ['每日签到：15 通用积分 + 1 次专属模型免费生成', '支持 20 个音色克隆', '最大上传达 30MB', '专属优先生图通道，极速生成', '抢先体验新功能'], false, false)}
+          </div>
+          <div class="promise-badges"><span>⊛ 支付宝快捷支付</span><span>⊗ 随时取消</span></div>
+          <div class="enterprise-bar">
+            <span class="ent-icon">⊞</span>
+            <div class="ent-info"><div class="ent-title">企业版</div><div class="ent-desc">为团队量身定制</div></div>
+            <span class="ent-btn">了解更多</span>
+          </div>
+          <div class="faq">
+            <h2>常见问题</h2>
+            <div class="faq-item"><span>你们支持哪些支付方式？</span><span class="chevron">›</span></div>
+            <div class="faq-item"><span>我可以克隆自己的声音吗？</span><span class="chevron">›</span></div>
+            <div class="faq-item"><span>我可以取消订阅吗？</span><span class="chevron">›</span></div>
+            <div class="faq-item"><span>ListenHub 支持哪些语言？</span><span class="chevron">›</span></div>
+          </div>
+        </section>
+
+        <section class="radio-fragment">
+          <div class="radio-card">
+            <div class="radio-head"><span class="onair">ON AIR</span><span class="radio-title">24H Radio</span></div>
+            <div class="radio-list">
+              <div class="radio-row active"><span>01 · ListenHub × Zhihu opening track</span><span style="color:var(--radio-gold);">Link</span></div>
+              <div class="radio-row"><span>02 · Creator story queue</span><span style="color:var(--radio-gold);">Link</span></div>
+              <div class="radio-row"><span>03 · New year audio postcard</span><span style="color:var(--radio-gold);">Link</span></div>
+            </div>
+            <div class="radio-controls"><span class="radio-control">‹</span><span class="radio-play">▶</span><span class="radio-control">›</span></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <div class="player">
+    <div class="player-cover"></div>
+    <div class="player-meta">
+      <div class="player-title">Morning product briefing</div>
+      <div class="seek"><span class="time">02:14</span><span class="seekbar"><span></span></span><span class="time">08:32</span></div>
+    </div>
+    <div class="player-button">▶</div>
+  </div>
+</body>
+</html>`;
+}
+
+function listenPodcastCard(art, title) {
+  return `<div class="podcast" style="--art:${art};">
+    <div class="podcast-meta">
+      <div class="podcast-title"><span>${escapeHtml(title)}</span><span class="play-mini">▶</span></div>
+      <div class="podcast-sub"><span>Podcast</span><span>·</span><span>2 speakers</span><span>·</span><span>12 mins</span></div>
+    </div>
+  </div>`;
+}
+
+function listenSlideCard(art) {
+  return `<div class="slide-card" style="--art:${art};"><span class="slide-play">▶</span></div>`;
+}
+
+function listenPlan(name, originalPrice, price, yearlyTip, credits, creditsDetail, features, featured, isFree) {
+  const rightsIntro = isFree ? '' : featured ? 'Basic 的所有权益，加上' : name === 'Max' ? 'Pro 的所有权益，加上' : name === 'Basic' ? 'Free 的所有权益，加上' : '';
+  const inner = `<div class="plan">
+    <div class="plan-head">
+      <h3>${escapeHtml(name)}</h3>
+      ${featured ? '<span class="plan-badge">最受欢迎</span>' : ''}
+    </div>
+    <div class="plan-price">
+      ${originalPrice ? `<span class="strikethrough"><span class="dollar">$</span>${escapeHtml(originalPrice.replace('$', ''))}</span>` : ''}
+      <span class="dollar">$</span><span class="amount">${escapeHtml(price.replace('$', ''))}</span><span class="period">/月</span>
+    </div>
+    ${yearlyTip ? `<div class="plan-yearly">按年付费，$${escapeHtml(yearlyTip.replace(/.*\$/, ''))}</div>` : '<div class="plan-yearly" style="opacity:0">—</div>'}
+    <div class="credits-box">
+      <span class="credits-num">${escapeHtml(credits)}</span>
+      <span class="credits-label">积分 / 月</span>
+      <span class="credits-detail">${escapeHtml(creditsDetail)}</span>
+    </div>
+    <a class="plan-cta${isFree ? ' outline' : ''}">${isFree ? '免费版' : `订阅 ${escapeHtml(name)}`}</a>
+    ${rightsIntro ? `<div class="plan-rights-intro">${escapeHtml(rightsIntro)}</div>` : ''}
+    <ul class="plan-rights">${features.map((f) => `<li>${escapeHtml(f)}</li>`).join('')}</ul>
+  </div>`;
+  return featured ? `<div class="plan-featured-wrap">${inner}</div>` : inner;
+}
+
+function galleryCard(art) {
+  return `<div class="image-card" style="--art:${art};">
+    <div class="image-meta"><span style="display:flex;align-items:center;gap:8px;"><span class="avatar"></span>creator · 2m</span><span class="favorite">★</span></div>
+  </div>`;
+}
+
+function bananaPlan(name, price, sub, features, variant) {
+  return `<div class="plan ${escapeHtml(variant)}">
+    ${variant === 'pro' ? '<span class="popular">Popular</span>' : ''}
+    <h3>${escapeHtml(name)}</h3>
+    <div class="price">${escapeHtml(price)} <span style="font-size:14px;color:#9a9ea8;">/mo</span></div>
+    <p>${escapeHtml(sub)}</p>
+    <ul>${features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join('')}</ul>
+    <a class="choose">Choose ${escapeHtml(name)}</a>
   </div>`;
 }
 
