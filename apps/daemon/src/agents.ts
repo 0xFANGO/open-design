@@ -27,7 +27,7 @@ const agentCapabilities = new Map();
 //                            to show.
 //   - `fallbackModels`     : static hint list. Used as the source of truth
 //                            for CLIs that don't expose a listing command
-//                            (Claude Code, Codex, Gemini CLI, Qwen Code)
+//                            (Claude Code, Codex, Devin for Terminal, Gemini CLI, Qwen Code)
 //                            and as the fallback for the others.
 //   - `reasoningOptions`   : optional reasoning-effort presets (currently
 //                            only Codex exposes this knob).
@@ -202,8 +202,13 @@ export const AGENT_DEFS = [
       { id: 'medium', label: 'Medium' },
       { id: 'high', label: 'High' },
     ],
-    // Prompt delivered via stdin (`codex exec -`) to avoid Windows
-    // `spawn ENAMETOOLONG` while keeping Codex on its structured JSON stream.
+    // Prompt is delivered via stdin pipe (gated by `promptViaStdin: true`
+    // below) to avoid Windows `spawn ENAMETOOLONG` while keeping Codex on
+    // its structured JSON stream. Recent Codex CLI versions reject a bare
+    // `-` argv sentinel — passing both the pipe and `-` produces
+    // `error: unexpected argument '-' found` and the agent exits with
+    // code 2 before any prompt is read (see issue #237). The pipe alone
+    // is sufficient for stdin delivery.
     buildArgs: (_prompt, _imagePaths, _extra, options = {}, runtimeContext = {}) => {
       const args = [
         'exec',
@@ -228,12 +233,40 @@ export const AGENT_DEFS = [
         // is exposed as `model_reasoning_effort`.
         args.push('-c', `model_reasoning_effort="${effort}"`);
       }
-      args.push('-');
       return args;
     },
     promptViaStdin: true,
     streamFormat: 'json-event-stream',
     eventParser: 'codex',
+  },
+  {
+    id: 'devin',
+    name: 'Devin for Terminal',
+    bin: 'devin',
+    versionArgs: ['--version'],
+    fetchModels: async (resolvedBin) =>
+      detectAcpModels({
+        bin: resolvedBin,
+        args: ['--permission-mode', 'dangerous', '--respect-workspace-trust', 'false', 'acp'],
+        timeoutMs: 15_000,
+        defaultModelOption: DEFAULT_MODEL_OPTION,
+      }),
+    // Fallback aliases from Devin for Terminal docs
+    // (https://cli.devin.ai/docs/models): `adaptive` appears in the config example;
+    // `opus`, `sonnet`, `swe`, `codex`, `gemini`, and `gpt` are documented
+    // as short model-family names / recommended picks.
+    fallbackModels: [
+      DEFAULT_MODEL_OPTION,
+      { id: 'adaptive', label: 'adaptive' },
+      { id: 'swe', label: 'swe' },
+      { id: 'opus', label: 'opus' },
+      { id: 'sonnet', label: 'sonnet' },
+      { id: 'codex', label: 'codex' },
+      { id: 'gpt', label: 'gpt' },
+      { id: 'gemini', label: 'gemini' },
+    ],
+    buildArgs: () => ['--permission-mode', 'dangerous', '--respect-workspace-trust', 'false', 'acp'],
+    streamFormat: 'acp-json-rpc',
   },
   {
     id: 'gemini',
