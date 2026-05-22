@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ConnectorDetail } from '@open-design/contracts';
 
 import { SettingsDialog } from '../../src/components/SettingsDialog';
-import { fetchConnectors, fetchSkills } from '../../src/providers/registry';
-import type { AppConfig, SkillSummary } from '../../src/types';
+import { fetchConnectors, fetchDesignTemplates, fetchSkills } from '../../src/providers/registry';
+import type { AppConfig } from '../../src/types';
 
 vi.mock('../../src/providers/registry', async () => {
   const actual = await vi.importActual<typeof import('../../src/providers/registry')>(
@@ -16,6 +16,7 @@ vi.mock('../../src/providers/registry', async () => {
   return {
     ...actual,
     fetchConnectors: vi.fn(),
+    fetchDesignTemplates: vi.fn(),
     fetchSkills: vi.fn(),
   };
 });
@@ -87,51 +88,19 @@ const orbitTemplates = [
 
 const clipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'clipboard');
 
-const orbitSkills: SkillSummary[] = [
-  {
-    id: 'orbit-general',
-    name: 'orbit-general',
-    description: 'General daily digest',
-    triggers: [],
-    mode: 'prototype',
-    scenario: 'orbit',
-    previewType: 'HTML',
-    designSystemRequired: false,
-    defaultFor: [],
-    upstream: null,
-    featured: 10,
-    hasBody: true,
-    examplePrompt: 'Summarize connector activity.',
-    aggregatesExamples: false,
-  },
-  {
-    id: 'orbit-github',
-    name: 'orbit-github',
-    description: 'GitHub-focused digest',
-    triggers: [],
-    mode: 'prototype',
-    scenario: 'orbit',
-    previewType: 'HTML',
-    designSystemRequired: false,
-    defaultFor: [],
-    upstream: null,
-    featured: 5,
-    hasBody: true,
-    examplePrompt: 'Summarize GitHub activity.',
-    aggregatesExamples: false,
-  },
-];
+type OnPersist = (cfg: AppConfig, options?: { forceMediaProviderSync?: boolean }) => void | Promise<void>;
+type OnClose = () => void;
 
 function renderOrbitSettings(
   initial: Partial<AppConfig> = {},
   options: {
     composioApiKeyConfigured?: boolean;
-    onPersist?: ReturnType<typeof vi.fn>;
-    onClose?: ReturnType<typeof vi.fn>;
+    onPersist?: OnPersist;
+    onClose?: OnClose;
   } = {},
 ) {
-  const onPersist = options.onPersist ?? vi.fn();
-  const onClose = options.onClose ?? vi.fn();
+  const onPersist = options.onPersist ?? vi.fn<OnPersist>();
+  const onClose = options.onClose ?? vi.fn<OnClose>();
 
   render(
     <SettingsDialog
@@ -148,9 +117,9 @@ function renderOrbitSettings(
       appVersionInfo={null}
       initialSection="orbit"
       onPersist={onPersist}
-      onPersistComposioKey={vi.fn()}
+      onPersistComposioKey={vi.fn<(composio: AppConfig['composio']) => void>()}
       onClose={onClose}
-      onRefreshAgents={vi.fn()}
+      onRefreshAgents={vi.fn<() => void>()}
     />,
   );
 
@@ -168,6 +137,7 @@ describe('SettingsDialog Orbit connector gate refresh', () => {
     }
     vi.restoreAllMocks();
     vi.mocked(fetchConnectors).mockReset();
+    vi.mocked(fetchDesignTemplates).mockReset();
     vi.mocked(fetchSkills).mockReset();
   });
 
@@ -175,6 +145,7 @@ describe('SettingsDialog Orbit connector gate refresh', () => {
     vi.mocked(fetchConnectors)
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([connectedConnector]);
+    vi.mocked(fetchDesignTemplates).mockResolvedValue([]);
     vi.mocked(fetchSkills).mockResolvedValue([]);
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
@@ -213,6 +184,7 @@ describe('SettingsDialog Orbit connector gate refresh', () => {
 
   it('enables Run it now after connector load in StrictMode', async () => {
     vi.mocked(fetchConnectors).mockResolvedValue([connectedConnector]);
+    vi.mocked(fetchDesignTemplates).mockResolvedValue([]);
     vi.mocked(fetchSkills).mockResolvedValue([]);
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
@@ -251,7 +223,8 @@ describe('SettingsDialog Orbit connector gate refresh', () => {
 
   it('locks Orbit controls until a connector is connected and routes the gate CTA to Connectors', async () => {
     vi.mocked(fetchConnectors).mockResolvedValue([]);
-    vi.mocked(fetchSkills).mockResolvedValue(orbitSkills);
+    vi.mocked(fetchDesignTemplates).mockResolvedValue(orbitTemplates);
+    vi.mocked(fetchSkills).mockResolvedValue([]);
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url === '/api/orbit/status') {
@@ -280,7 +253,8 @@ describe('SettingsDialog Orbit connector gate refresh', () => {
 
   it('autosaves Orbit schedule and prompt template edits after connectors are available', async () => {
     vi.mocked(fetchConnectors).mockResolvedValue([connectedConnector]);
-    vi.mocked(fetchSkills).mockResolvedValue(orbitSkills);
+    vi.mocked(fetchDesignTemplates).mockResolvedValue(orbitTemplates);
+    vi.mocked(fetchSkills).mockResolvedValue([]);
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url === '/api/orbit/status') {
@@ -314,7 +288,7 @@ describe('SettingsDialog Orbit connector gate refresh', () => {
       target: { value: '01:30' },
     });
     fireEvent.change(screen.getByLabelText('Orbit prompt template'), {
-      target: { value: 'orbit-github' },
+      target: { value: 'orbit-editorial' },
     });
 
     await waitFor(() => {
@@ -323,7 +297,7 @@ describe('SettingsDialog Orbit connector gate refresh', () => {
           orbit: {
             enabled: true,
             time: '01:30',
-            templateSkillId: 'orbit-github',
+            templateSkillId: 'orbit-editorial',
           },
         }),
         expect.any(Object),
@@ -333,7 +307,8 @@ describe('SettingsDialog Orbit connector gate refresh', () => {
 
   it('updates the Last run panel when the selected Orbit template changes', async () => {
     vi.mocked(fetchConnectors).mockResolvedValue([connectedConnector]);
-    vi.mocked(fetchSkills).mockResolvedValue(orbitTemplates);
+    vi.mocked(fetchDesignTemplates).mockResolvedValue(orbitTemplates);
+    vi.mocked(fetchSkills).mockResolvedValue([]);
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url === '/api/orbit/status') {
@@ -411,7 +386,8 @@ describe('SettingsDialog Orbit connector gate refresh', () => {
   it('preserves legacy unscoped Last run only for the initially selected template', async () => {
     vi.useFakeTimers();
     vi.mocked(fetchConnectors).mockResolvedValue([connectedConnector]);
-    vi.mocked(fetchSkills).mockResolvedValue(orbitTemplates);
+    vi.mocked(fetchDesignTemplates).mockResolvedValue(orbitTemplates);
+    vi.mocked(fetchSkills).mockResolvedValue([]);
     let statusRequestCount = 0;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
@@ -471,7 +447,8 @@ describe('SettingsDialog Orbit connector gate refresh', () => {
       value: { writeText },
     });
     vi.mocked(fetchConnectors).mockResolvedValue([connectedConnector]);
-    vi.mocked(fetchSkills).mockResolvedValue(orbitSkills);
+    vi.mocked(fetchDesignTemplates).mockResolvedValue(orbitTemplates);
+    vi.mocked(fetchSkills).mockResolvedValue([]);
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url === '/api/orbit/status') {
@@ -521,5 +498,370 @@ describe('SettingsDialog Orbit connector gate refresh', () => {
       expect(writeText).toHaveBeenCalledWith('## Daily Orbit\n- GitHub shipped');
       expect(screen.getByText('Copied')).toBeTruthy();
     });
+  });
+
+  it('renders the Open artifact link only when Orbit last run includes a live artifact target', async () => {
+    vi.mocked(fetchConnectors).mockResolvedValue([connectedConnector]);
+    vi.mocked(fetchDesignTemplates).mockResolvedValue(orbitTemplates);
+    vi.mocked(fetchSkills).mockResolvedValue([]);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/orbit/status') {
+        return new Response(JSON.stringify({
+          running: false,
+          nextRunAt: null,
+          lastRun: {
+            completedAt: '2026-05-06T10:00:00.000Z',
+            trigger: 'manual',
+            templateSkillId: 'orbit-general',
+            connectorsChecked: 5,
+            connectorsSucceeded: 3,
+            connectorsSkipped: 2,
+            connectorsFailed: 0,
+            markdown: 'General latest summary',
+            artifactId: 'artifact-123',
+            artifactProjectId: 'project-456',
+          },
+          lastRunsByTemplate: {
+            'orbit-general': {
+              completedAt: '2026-05-06T10:00:00.000Z',
+              trigger: 'manual',
+              templateSkillId: 'orbit-general',
+              connectorsChecked: 5,
+              connectorsSucceeded: 3,
+              connectorsSkipped: 2,
+              connectorsFailed: 0,
+              markdown: 'General latest summary',
+              artifactId: 'artifact-123',
+              artifactProjectId: 'project-456',
+            },
+            'orbit-editorial': {
+              completedAt: '2026-05-06T09:00:00.000Z',
+              trigger: 'scheduled',
+              templateSkillId: 'orbit-editorial',
+              connectorsChecked: 7,
+              connectorsSucceeded: 2,
+              connectorsSkipped: 4,
+              connectorsFailed: 1,
+              markdown: 'Editorial summary',
+            },
+          },
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    render(
+      <SettingsDialog
+        initial={baseConfig}
+        agents={[]}
+        daemonLive
+        appVersionInfo={null}
+        initialSection="orbit"
+        onPersist={vi.fn()}
+        onPersistComposioKey={vi.fn()}
+        onClose={vi.fn()}
+        onRefreshAgents={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: 'Open artifact' })).toBeTruthy();
+    });
+    expect(
+      screen.getByRole('link', { name: 'Open artifact' }).getAttribute('href'),
+    ).toBe('/api/live-artifacts/artifact-123/preview?projectId=project-456');
+
+    fireEvent.change(screen.getByLabelText('Orbit prompt template'), {
+      target: { value: 'orbit-editorial' },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole('link', { name: 'Open artifact' })).toBeNull();
+    });
+  });
+
+  it('renders the live artifact link as a new-tab external link', async () => {
+    vi.mocked(fetchConnectors).mockResolvedValue([connectedConnector]);
+    vi.mocked(fetchDesignTemplates).mockResolvedValue(orbitTemplates);
+    vi.mocked(fetchSkills).mockResolvedValue([]);
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/orbit/status') {
+        return new Response(JSON.stringify({
+          running: false,
+          nextRunAt: null,
+          lastRun: {
+            completedAt: '2026-05-06T10:00:00.000Z',
+            trigger: 'manual',
+            templateSkillId: 'orbit-general',
+            connectorsChecked: 5,
+            connectorsSucceeded: 3,
+            connectorsSkipped: 2,
+            connectorsFailed: 0,
+            markdown: 'General latest summary',
+            artifactId: 'artifact-123',
+            artifactProjectId: 'project-456',
+          },
+          lastRunsByTemplate: {
+            'orbit-general': {
+              completedAt: '2026-05-06T10:00:00.000Z',
+              trigger: 'manual',
+              templateSkillId: 'orbit-general',
+              connectorsChecked: 5,
+              connectorsSucceeded: 3,
+              connectorsSkipped: 2,
+              connectorsFailed: 0,
+              markdown: 'General latest summary',
+              artifactId: 'artifact-123',
+              artifactProjectId: 'project-456',
+            },
+          },
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    render(
+      <SettingsDialog
+        initial={baseConfig}
+        agents={[]}
+        daemonLive
+        appVersionInfo={null}
+        initialSection="orbit"
+        onPersist={vi.fn()}
+        onPersistComposioKey={vi.fn()}
+        onClose={vi.fn()}
+        onRefreshAgents={vi.fn()}
+      />,
+    );
+
+    const openArtifactLink = await screen.findByRole('link', { name: 'Open artifact' });
+    expect(openArtifactLink.getAttribute('target')).toBe('_blank');
+    expect(openArtifactLink.getAttribute('rel')).toContain('noreferrer');
+  });
+
+  it('keeps the markdown copy action but hides Open artifact for legacy last runs without a live artifact target', async () => {
+    vi.mocked(fetchConnectors).mockResolvedValue([connectedConnector]);
+    vi.mocked(fetchDesignTemplates).mockResolvedValue(orbitTemplates);
+    vi.mocked(fetchSkills).mockResolvedValue([]);
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/orbit/status') {
+        return new Response(JSON.stringify({
+          running: false,
+          nextRunAt: null,
+          lastRun: {
+            completedAt: '2026-05-06T10:00:00.000Z',
+            trigger: 'manual',
+            templateSkillId: 'orbit-general',
+            connectorsChecked: 5,
+            connectorsSucceeded: 3,
+            connectorsSkipped: 2,
+            connectorsFailed: 0,
+            markdown: 'Legacy markdown summary',
+          },
+          lastRunsByTemplate: {
+            'orbit-general': {
+              completedAt: '2026-05-06T10:00:00.000Z',
+              trigger: 'manual',
+              templateSkillId: 'orbit-general',
+              connectorsChecked: 5,
+              connectorsSucceeded: 3,
+              connectorsSkipped: 2,
+              connectorsFailed: 0,
+              markdown: 'Legacy markdown summary',
+            },
+          },
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    render(
+      <SettingsDialog
+        initial={baseConfig}
+        agents={[]}
+        daemonLive
+        appVersionInfo={null}
+        initialSection="orbit"
+        onPersist={vi.fn()}
+        onPersistComposioKey={vi.fn()}
+        onClose={vi.fn()}
+        onRefreshAgents={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Legacy markdown summary')).toBeTruthy();
+    });
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Open artifact' })).toBeNull();
+  });
+
+  it('falls back from the live artifact strip to the legacy markdown strip when switching templates', async () => {
+    vi.mocked(fetchConnectors).mockResolvedValue([connectedConnector]);
+    vi.mocked(fetchDesignTemplates).mockResolvedValue(orbitTemplates);
+    vi.mocked(fetchSkills).mockResolvedValue([]);
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/orbit/status') {
+        return new Response(JSON.stringify({
+          running: false,
+          nextRunAt: null,
+          lastRun: {
+            completedAt: '2026-05-06T10:00:00.000Z',
+            trigger: 'manual',
+            templateSkillId: 'orbit-general',
+            connectorsChecked: 5,
+            connectorsSucceeded: 3,
+            connectorsSkipped: 2,
+            connectorsFailed: 0,
+            markdown: 'General latest summary',
+            artifactId: 'artifact-123',
+            artifactProjectId: 'project-456',
+          },
+          lastRunsByTemplate: {
+            'orbit-general': {
+              completedAt: '2026-05-06T10:00:00.000Z',
+              trigger: 'manual',
+              templateSkillId: 'orbit-general',
+              connectorsChecked: 5,
+              connectorsSucceeded: 3,
+              connectorsSkipped: 2,
+              connectorsFailed: 0,
+              markdown: 'General latest summary',
+              artifactId: 'artifact-123',
+              artifactProjectId: 'project-456',
+            },
+            'orbit-editorial': {
+              completedAt: '2026-05-06T09:00:00.000Z',
+              trigger: 'scheduled',
+              templateSkillId: 'orbit-editorial',
+              connectorsChecked: 7,
+              connectorsSucceeded: 2,
+              connectorsSkipped: 4,
+              connectorsFailed: 1,
+              markdown: 'Editorial summary',
+            },
+          },
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    render(
+      <SettingsDialog
+        initial={baseConfig}
+        agents={[]}
+        daemonLive
+        appVersionInfo={null}
+        initialSection="orbit"
+        onPersist={vi.fn()}
+        onPersistComposioKey={vi.fn()}
+        onClose={vi.fn()}
+        onRefreshAgents={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole('link', { name: 'Open artifact' });
+    expect(screen.getByText('General latest summary')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Orbit prompt template'), {
+      target: { value: 'orbit-editorial' },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole('link', { name: 'Open artifact' })).toBeNull();
+    });
+    expect(screen.getByText('Editorial summary')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy();
+  });
+
+  it('restores the live artifact strip when switching back from a legacy markdown template', async () => {
+    vi.mocked(fetchConnectors).mockResolvedValue([connectedConnector]);
+    vi.mocked(fetchDesignTemplates).mockResolvedValue(orbitTemplates);
+    vi.mocked(fetchSkills).mockResolvedValue([]);
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/orbit/status') {
+        return new Response(JSON.stringify({
+          running: false,
+          nextRunAt: null,
+          lastRun: {
+            completedAt: '2026-05-06T09:00:00.000Z',
+            trigger: 'scheduled',
+            templateSkillId: 'orbit-editorial',
+            connectorsChecked: 7,
+            connectorsSucceeded: 2,
+            connectorsSkipped: 4,
+            connectorsFailed: 1,
+            markdown: 'Editorial summary',
+          },
+          lastRunsByTemplate: {
+            'orbit-general': {
+              completedAt: '2026-05-06T10:00:00.000Z',
+              trigger: 'manual',
+              templateSkillId: 'orbit-general',
+              connectorsChecked: 5,
+              connectorsSucceeded: 3,
+              connectorsSkipped: 2,
+              connectorsFailed: 0,
+              markdown: 'General latest summary',
+              artifactId: 'artifact-123',
+              artifactProjectId: 'project-456',
+            },
+            'orbit-editorial': {
+              completedAt: '2026-05-06T09:00:00.000Z',
+              trigger: 'scheduled',
+              templateSkillId: 'orbit-editorial',
+              connectorsChecked: 7,
+              connectorsSucceeded: 2,
+              connectorsSkipped: 4,
+              connectorsFailed: 1,
+              markdown: 'Editorial summary',
+            },
+          },
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    render(
+      <SettingsDialog
+        initial={{
+          ...baseConfig,
+          orbit: {
+            enabled: baseConfig.orbit?.enabled ?? false,
+            time: baseConfig.orbit?.time ?? '09:00',
+            templateSkillId: 'orbit-editorial',
+          },
+        }}
+        agents={[]}
+        daemonLive
+        appVersionInfo={null}
+        initialSection="orbit"
+        onPersist={vi.fn()}
+        onPersistComposioKey={vi.fn()}
+        onClose={vi.fn()}
+        onRefreshAgents={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByRole('link', { name: 'Open artifact' })).toBeNull();
+    });
+    expect(screen.getByText('Editorial summary')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Orbit prompt template'), {
+      target: { value: 'orbit-general' },
+    });
+
+    const openArtifactLink = await screen.findByRole('link', { name: 'Open artifact' });
+    expect(openArtifactLink.getAttribute('href')).toBe(
+      '/api/live-artifacts/artifact-123/preview?projectId=project-456',
+    );
+    expect(screen.getByText('General latest summary')).toBeTruthy();
   });
 });

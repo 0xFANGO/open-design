@@ -2,10 +2,23 @@ import type { Express } from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
 import { detectAgents } from './agents.js';
-import { findSkillById, splitDerivedSkillId } from './skills.js';
+import {
+  SkillImportError,
+  deleteUserSkill,
+  findSkillById,
+  importUserSkill,
+  listSkillFiles,
+  splitDerivedSkillId,
+  updateUserSkill,
+} from './skills.js';
 import { listCodexPets, readCodexPetSpritesheet } from './codex-pets.js';
 import { syncCommunityPets } from './community-pets-sync.js';
 import { readDesignSystem } from './design-systems.js';
+import {
+  LocalDesignSystemImportError,
+  importLocalDesignSystemProject,
+} from './design-system-import.js';
+import { importGitHubDesignSystemProject } from './design-system-github-import.js';
 import { renderDesignSystemPreview } from './design-system-preview.js';
 import { renderDesignSystemShowcase } from './design-system-showcase.js';
 import { listPromptTemplates, readPromptTemplate } from './prompt-templates.js';
@@ -18,14 +31,24 @@ export interface RegisterStaticResourceRoutesDeps extends RouteDeps<'http' | 'pa
 export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticResourceRoutesDeps) {
   const {
     RUNTIME_DATA_DIR,
+    RUNTIME_DATA_DIR_CANONICAL,
+    PROJECT_ROOT,
     DESIGN_SYSTEMS_DIR,
     USER_DESIGN_SYSTEMS_DIR,
+    DESIGN_TEMPLATES_DIR,
+    USER_DESIGN_TEMPLATES_DIR,
     SKILLS_DIR,
     USER_SKILLS_DIR,
     PROMPT_TEMPLATES_DIR,
     BUNDLED_PETS_DIR,
   } = ctx.paths;
-  const { listAllSkills, listAllDesignSystems, mimeFor } = ctx.resources;
+  const {
+    listAllSkills,
+    listAllDesignTemplates,
+    listAllSkillLikeEntries,
+    listAllDesignSystems,
+    mimeFor,
+  } = ctx.resources;
   const { isLocalSameOrigin, resolvedPortRef, sendApiError } = ctx.http;
   const requireLocalOrigin = (req: any, res: any) => {
     if (isLocalSameOrigin(req, resolvedPortRef.current)) return true;
@@ -68,6 +91,128 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       res.json(serializable);
     } catch (err: any) {
       res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // Design templates — the rendering catalogue. Same shape as /api/skills
+  // (so the web client can reuse SkillSummary types) but rooted at
+  // DESIGN_TEMPLATE_ROOTS so the listing stays focused on template-style
+  // entries without bleeding functional skills into the EntryView gallery.
+  app.get('/api/design-templates', async (_req, res) => {
+    try {
+      const templates = await listAllDesignTemplates();
+      res.json({
+        designTemplates: templates.map(({ body, dir: _dir, ...rest }) => ({
+          ...rest,
+          hasBody: typeof body === 'string' && body.length > 0,
+        })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.get('/api/design-templates/:id', async (req, res) => {
+    try {
+      const templates = await listAllDesignTemplates();
+      const template = findSkillById(templates, req.params.id);
+      if (!template) return res.status(404).json({ error: 'design template not found' });
+      const { dir: _dir, ...serializable } = template;
+      res.json(serializable);
+    } catch (err: any) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // POST /api/skills/import — write a new SKILL.md under USER_SKILLS_DIR
+  // from a UI-supplied body. The next /api/skills request surfaces it
+  // automatically because listSkills walks USER_SKILLS_DIR first.
+  app.post('/api/skills/import', async (req, res) => {
+    try {
+      const result = await importUserSkill(USER_SKILLS_DIR, req.body || {});
+      const skills = await listAllSkills();
+      const skill = findSkillById(skills, result.id);
+      if (!skill) {
+        return sendApiError(
+          res,
+          500,
+          'INTERNAL_ERROR',
+          'imported skill was not found in catalog',
+        );
+      }
+      const { dir: _dir, body: _body, ...serializable } = skill;
+      res.status(201).json({
+        skill: {
+          ...serializable,
+          hasBody: typeof skill.body === 'string' && skill.body.length > 0,
+        },
+      });
+    } catch (err: any) {
+      if (err instanceof SkillImportError) {
+        const status = err.code === 'NOT_FOUND' ? 404 : err.code === 'BAD_REQUEST' ? 400 : 500;
+        return sendApiError(res, status, err.code, err.message);
+      }
+      sendApiError(res, 500, 'INTERNAL_ERROR', String(err));
+    }
+  });
+
+  // PUT /api/skills/:id — update an existing user-managed skill's
+  // SKILL.md (and, when the user edits a built-in for the first time,
+  // clone its side files into USER_SKILLS_DIR/<slug>/ so subsequent
+  // /api/skills/:id/{files,example,assets/*} requests keep resolving
+  // the bundled assets/references/scripts/examples). See PR #955 review.
+  app.put('/api/skills/:id', async (req, res) => {
+    try {
+      const skills = await listAllSkills();
+      const skill = findSkillById(skills, req.params.id);
+      if (!skill) {
+        return sendApiError(res, 404, 'NOT_FOUND', 'skill not found');
+      }
+      const result = await updateUserSkill(USER_SKILLS_DIR, {
+        ...(req.body || {}),
+        id: skill.id,
+        sourceDir: skill.dir,
+      });
+      const next = await listAllSkills();
+      const updated = findSkillById(next, result.id);
+      if (!updated) {
+        return sendApiError(
+          res,
+          500,
+          'INTERNAL_ERROR',
+          'updated skill was not found in catalog',
+        );
+      }
+      const { dir: _dir, body: _body, ...serializable } = updated;
+      res.json({
+        skill: {
+          ...serializable,
+          hasBody: typeof updated.body === 'string' && updated.body.length > 0,
+        },
+      });
+    } catch (err: any) {
+      if (err instanceof SkillImportError) {
+        const status = err.code === 'NOT_FOUND' ? 404 : err.code === 'BAD_REQUEST' ? 400 : 500;
+        return sendApiError(res, status, err.code, err.message);
+      }
+      sendApiError(res, 500, 'INTERNAL_ERROR', String(err));
+    }
+  });
+
+  // GET /api/skills/:id/files — flat listing of the files that ship with
+  // a skill. Used by the Settings → Skills detail panel to render the
+  // file tree (capped server-side to keep payload bounded).
+  app.get('/api/skills/:id/files', async (req, res) => {
+    try {
+      const skills = await listAllSkills();
+      const skill = findSkillById(skills, req.params.id);
+      if (!skill) {
+        return sendApiError(res, 404, 'NOT_FOUND', 'skill not found');
+      }
+      const files = await listSkillFiles(skill.dir);
+      res.json({ files });
+    } catch (err: any) {
+      sendApiError(res, 500, 'INTERNAL_ERROR', String(err));
     }
   });
 
@@ -156,17 +301,11 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     }
   });
 
-  app.get('/api/design-systems/:id', async (req, res) => {
-    try {
-      const body =
-        (await readDesignSystem(DESIGN_SYSTEMS_DIR, req.params.id)) ??
-        (await readDesignSystem(USER_DESIGN_SYSTEMS_DIR, req.params.id));
-      if (body === null)
-        return res.status(404).json({ error: 'design system not found' });
-      res.json({ id: req.params.id, body });
-    } catch (err: any) {
-      res.status(500).json({ error: String(err) });
-    }
+  app.get('/api/design-systems/:id', (_req, _res, next) => {
+    // The design-system workflow owns the detail shape now because user-created
+    // systems may be backed by a review workspace project. Let the richer route
+    // registered in server.ts answer this request.
+    next();
   });
 
   app.get('/api/prompt-templates', async (_req, res) => {
@@ -199,35 +338,15 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
   // samples, sample components, and the full DESIGN.md rendered as prose.
   // Built at request time from the on-disk DESIGN.md so any update to the
   // file shows up on the next view, no rebuild needed.
-  app.get('/api/design-systems/:id/preview', async (req, res) => {
-    try {
-      const body =
-        (await readDesignSystem(DESIGN_SYSTEMS_DIR, req.params.id)) ??
-        (await readDesignSystem(USER_DESIGN_SYSTEMS_DIR, req.params.id));
-      if (body === null)
-        return res.status(404).type('text/plain').send('not found');
-      const html = renderDesignSystemPreview(req.params.id, body);
-      res.type('text/html').send(html);
-    } catch (err: any) {
-      res.status(500).type('text/plain').send(String(err));
-    }
+  app.get('/api/design-systems/:id/preview', (_req, _res, next) => {
+    next();
   });
 
   // Marketing-style showcase derived from the same DESIGN.md — full landing
   // page parameterised by the system's tokens. Same lazy-render strategy as
   // /preview: built at request time, no caching.
-  app.get('/api/design-systems/:id/showcase', async (req, res) => {
-    try {
-      const body =
-        (await readDesignSystem(DESIGN_SYSTEMS_DIR, req.params.id)) ??
-        (await readDesignSystem(USER_DESIGN_SYSTEMS_DIR, req.params.id));
-      if (body === null)
-        return res.status(404).type('text/plain').send('not found');
-      const html = renderDesignSystemShowcase(req.params.id, body);
-      res.type('text/html').send(html);
-    } catch (err: any) {
-      res.status(500).type('text/plain').send(String(err));
-    }
+  app.get('/api/design-systems/:id/showcase', (_req, _res, next) => {
+    next();
   });
 
   // Pre-built example HTML for a skill — what a typical artifact from this
@@ -259,7 +378,11 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
   //      a real preview on its parent card instead of returning 404.
   app.get('/api/skills/:id/example', async (req, res) => {
     try {
-      const skills = await listAllSkills();
+      // Span both functional skills and design templates: rendered example
+      // HTML rewrites assets to /api/skills/<id>/... and we want those URLs
+      // to keep resolving regardless of which root owns the backing folder
+      // after the skills/design-templates split.
+      const skills = await listAllSkillLikeEntries();
 
       // 1. Derived `<parent>:<child>` id — resolve straight to the matching
       // file under <parentDir>/examples/. Done before findSkillById so the
@@ -381,7 +504,9 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
   // contributors can preview `example.html` straight from disk.
   app.get('/api/skills/:id/assets/*', async (req, res) => {
     try {
-      const skills = await listAllSkills();
+      // Same rationale as /example above — assets need to resolve whether
+      // the owning skill folder lives under skills/ or design-templates/.
+      const skills = await listAllSkillLikeEntries();
       const skill = findSkillById(skills, req.params.id);
       if (!skill) {
         return res.status(404).type('text/plain').send('skill not found');
@@ -465,8 +590,122 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     }
   });
 
-  app.delete('/api/design-systems/:id', async (req, res) => {
+  app.post('/api/design-systems/import/local', async (req, res) => {
     if (!requireLocalOrigin(req, res)) return;
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const inputPath =
+        typeof body.baseDir === 'string'
+          ? body.baseDir
+          : typeof body.path === 'string'
+            ? body.path
+            : typeof body.localPath === 'string'
+              ? body.localPath
+              : '';
+      if (!path.isAbsolute(inputPath)) {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'local project path must be absolute');
+      }
+      let sourceRoot: string;
+      let sourceStats: fs.Stats;
+      try {
+        sourceRoot = fs.realpathSync.native(inputPath);
+        sourceStats = fs.statSync(sourceRoot);
+      } catch {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'local project path was not found');
+      }
+      if (!sourceStats.isDirectory()) {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'local project path must be a directory');
+      }
+      const sourceParent = path.dirname(sourceRoot);
+      if (sourceRoot === sourceParent) {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'local project path cannot be a filesystem root');
+      }
+      try {
+        const runtimeRoot = fs.realpathSync.native(RUNTIME_DATA_DIR_CANONICAL);
+        if (sourceRoot === runtimeRoot || sourceRoot.startsWith(`${runtimeRoot}${path.sep}`)) {
+          return sendApiError(res, 400, 'BAD_REQUEST', 'cannot import Open Design runtime data');
+        }
+      } catch {
+        // The runtime data directory may not exist yet in first-run tests.
+      }
+
+      const before = await listAllDesignSystems();
+      const importMode = normalizeDesignSystemImportMode(body.importMode);
+      const craftApplies = normalizeDesignSystemCraftApplies(body.craftApplies);
+      const result = await importLocalDesignSystemProject(sourceRoot, USER_DESIGN_SYSTEMS_DIR, {
+        ...(typeof body.name === 'string' ? { name: body.name } : {}),
+        ...(importMode ? { importMode } : {}),
+        ...(craftApplies ? { craftApplies } : {}),
+        reservedIds: before.map((system) => system.id),
+      });
+      const systems = await listAllDesignSystems();
+      const designSystem = systems.find((system) => system.id === result.id);
+      if (!designSystem) {
+        return sendApiError(
+          res,
+          500,
+          'INTERNAL_ERROR',
+          `imported design system was not found in catalog: ${result.dir}`,
+        );
+      }
+      res.status(201).json({ designSystem });
+    } catch (err: any) {
+      if (err instanceof LocalDesignSystemImportError) {
+        return sendApiError(res, err.code === 'BAD_REQUEST' ? 400 : 500, err.code, err.message);
+      }
+      sendApiError(res, 500, 'INTERNAL_ERROR', String(err));
+    }
+  });
+
+  app.post('/api/design-systems/import/github', async (req, res) => {
+    if (!requireLocalOrigin(req, res)) return;
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const githubUrl =
+        typeof body.githubUrl === 'string'
+          ? body.githubUrl
+          : typeof body.url === 'string'
+            ? body.url
+            : '';
+      const before = await listAllDesignSystems();
+      const importMode = normalizeDesignSystemImportMode(body.importMode);
+      const craftApplies = normalizeDesignSystemCraftApplies(body.craftApplies);
+      const result = await importGitHubDesignSystemProject(
+        githubUrl,
+        path.join(PROJECT_ROOT, '.tmp'),
+        USER_DESIGN_SYSTEMS_DIR,
+        {
+          ...(typeof body.name === 'string' ? { name: body.name } : {}),
+          ...(typeof body.branch === 'string' ? { branch: body.branch } : {}),
+          ...(importMode ? { importMode } : {}),
+          ...(craftApplies ? { craftApplies } : {}),
+          reservedIds: before.map((system) => system.id),
+        },
+      );
+      const systems = await listAllDesignSystems();
+      const designSystem = systems.find((system) => system.id === result.id);
+      if (!designSystem) {
+        return sendApiError(
+          res,
+          500,
+          'INTERNAL_ERROR',
+          `imported GitHub design system was not found in catalog: ${result.dir}`,
+        );
+      }
+      res.status(201).json({ designSystem });
+    } catch (err: any) {
+      if (err instanceof LocalDesignSystemImportError) {
+        return sendApiError(res, err.code === 'BAD_REQUEST' ? 400 : 500, err.code, err.message);
+      }
+      sendApiError(res, 500, 'INTERNAL_ERROR', String(err));
+    }
+  });
+
+  app.delete('/api/design-systems/:id', async (req, res, next) => {
+    if (!requireLocalOrigin(req, res)) return;
+    if (req.params.id.startsWith('user:')) {
+      return next();
+    }
     try {
       const result = await uninstallById(
         req.params.id,
@@ -481,6 +720,24 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     }
   });
 
+}
+
+function normalizeDesignSystemImportMode(value: unknown): 'normalized' | 'hybrid' | 'verbatim' | undefined {
+  return value === 'normalized' || value === 'hybrid' || value === 'verbatim' ? value : undefined;
+}
+
+function normalizeDesignSystemCraftApplies(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue;
+    const slug = entry.trim().toLowerCase();
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || seen.has(slug)) continue;
+    seen.add(slug);
+    out.push(slug);
+  }
+  return out;
 }
 
 function assembleExample(templateHtml: string, slidesHtml: string, title: string) {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DesignFilesPanel } from '../../src/components/DesignFilesPanel';
@@ -9,7 +9,7 @@ import type { ProjectFile, ProjectFileKind } from '../../src/types';
 function extForKind(kind: ProjectFileKind): string {
   if (kind === 'html') return 'html';
   if (kind === 'image') return 'png';
-  if (kind === 'sketch') return 'svg';
+  if (kind === 'sketch') return 'sketch.json';
   if (kind === 'text') return 'txt';
   if (kind === 'code') return 'ts';
   if (kind === 'pdf') return 'pdf';
@@ -70,7 +70,7 @@ function getPageInfo(container: HTMLElement): string {
   return el?.textContent?.trim() ?? '';
 }
 
-/** page-btn order: top-Prev=0, top-Next=1, bottom-Prev=2, bottom-Next=3 */
+/** page-btn order: bottom-Prev=0, bottom-Next=1 */
 function getPageBtns(container: HTMLElement) {
   return Array.from(container.querySelectorAll<HTMLButtonElement>('.df-page-btn'));
 }
@@ -123,7 +123,23 @@ describe('DesignFilesPanel grouping', () => {
     expect(screen.getByTestId('design-file-row-live:artifact-1')).toBeTruthy();
   });
 
-  it('keeps the ungrouped table view as the default view', () => {
+  it('groups files by kind when kind grouping is selected', () => {
+    renderPanel([
+      file({ name: 'page.html', kind: 'html', mime: 'text/html' }),
+      file({ name: 'chart.png', kind: 'image', mime: 'image/png' }),
+    ]);
+
+    const sectionLabels = Array.from(
+      document.querySelectorAll<HTMLElement>('.df-section-label'),
+    ).map((el) => el.textContent ?? '');
+    expect(sectionLabels.some((text) => text.includes('HTML page'))).toBe(true);
+    expect(sectionLabels.some((text) => text.includes('Image'))).toBe(true);
+    expect(screen.getByTestId('design-file-row-page.html')).toBeTruthy();
+    expect(screen.getByTestId('design-file-row-chart.png')).toBeTruthy();
+    expect(screen.queryByText('Today')).toBeNull();
+  });
+
+  it('keeps kind grouping selected by default', () => {
     renderPanel([
       file({ name: 'page.html', kind: 'html', mime: 'text/html' }),
       file({ name: 'chart.png', kind: 'image', mime: 'image/png' }),
@@ -360,6 +376,22 @@ describe('DesignFilesPanel large-list regression', () => {
     expect(getPageInfo(container)).toContain('31–60 of 500');
   });
 
+  it('keeps the bulk toolbar focused on the all-files action instead of duplicating page select', () => {
+    const { container } = renderPanel(generateFiles(20));
+
+    const toolbar = container.querySelector('.df-select-bar');
+    expect(toolbar?.textContent).toContain('Select everything');
+    expect(toolbar?.textContent).not.toContain('Select all on page');
+  });
+
+  it('hides redundant pagination controls for a single small page', () => {
+    const { container } = renderPanel(generateFiles(3));
+
+    expect(container.querySelector('.df-pagination')).toBeNull();
+    expect(container.querySelector('.df-page-btn')).toBeNull();
+    expect(container.querySelector('.df-select-bar')).toBeNull();
+  });
+
   it('uses non-control table cells as file row click targets', () => {
     const files = generateFiles(1);
     const { container, onOpenFile } = renderPanel(files);
@@ -402,16 +434,56 @@ describe('DesignFilesPanel large-list regression', () => {
     expect(onOpenFile).not.toHaveBeenCalled();
   });
 
+  it('renders sketch files with the static sketch preview instead of a broken image', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      version: 1,
+      items: [
+        {
+          kind: 'rect',
+          x: 20,
+          y: 16,
+          w: 120,
+          h: 72,
+          color: '#1c1b1a',
+          size: 2,
+        },
+      ],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const sketchFile = file({
+      name: 'board.sketch.json',
+      path: 'board.sketch.json',
+      kind: 'sketch',
+      mime: 'application/json; charset=utf-8',
+    });
+    const { container } = renderPanel([sketchFile]);
+
+    fireEvent.click(container.querySelector('.df-file-row .df-row-name-btn')!);
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="sketch-preview-svg"]')).toBeTruthy();
+    });
+    expect(container.querySelector('.df-preview-thumb img')).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/test-project/raw/board.sketch.json', { cache: 'no-store' });
+  });
+
   it('passes every selected file to batch delete', () => {
     const files = generateFiles(3);
     const { container, onDeleteFiles } = renderPanel(files);
     const rows = Array.from(container.querySelectorAll('.df-file-row'));
 
+    const firstName = rows[0]!.getAttribute('data-testid')!.replace(/^design-file-row-/, '');
+    const secondName = rows[1]!.getAttribute('data-testid')!.replace(/^design-file-row-/, '');
     fireEvent.click(rows[0]!.querySelector('.df-row-check')!);
     fireEvent.click(rows[1]!.querySelector('.df-row-check')!);
     fireEvent.click(container.querySelector('[data-testid="design-files-batch-delete"]')!);
 
-    expect(onDeleteFiles).toHaveBeenCalledWith(['file-1.html', 'file-2.png']);
+    expect(onDeleteFiles).toHaveBeenCalledTimes(1);
+    expect(onDeleteFiles).toHaveBeenCalledWith([firstName, secondName]);
   });
 
   it('renders 500 files within a reasonable time', () => {

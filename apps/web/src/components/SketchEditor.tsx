@@ -1,54 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useT } from '../i18n';
+import { readDefaultSketchToolColor } from './sketch-colors';
+import type { SketchItem } from './sketch-model';
 
 export type Tool = 'select' | 'pen' | 'text' | 'rect' | 'arrow' | 'eraser';
-
-interface Stroke {
-  kind: 'pen';
-  points: Array<{ x: number; y: number }>;
-  color: string;
-  size: number;
-}
-interface RectShape {
-  kind: 'rect';
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  color: string;
-  size: number;
-}
-interface ArrowShape {
-  kind: 'arrow';
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  color: string;
-  size: number;
-}
-interface TextItem {
-  kind: 'text';
-  x: number;
-  y: number;
-  text: string;
-  color: string;
-  size: number;
-}
-
-export type SketchItem = Stroke | RectShape | ArrowShape | TextItem;
-
-export interface SketchDocument {
-  version: 1;
-  items: SketchItem[];
-}
 
 interface Props {
   // Controlled items — the parent owns the strokes so switching to a different
   // tab and back doesn't lose the in-progress sketch. The editor only reports
   // changes via onItemsChange.
   items: SketchItem[];
+  hasPreservedRawItems?: boolean;
   onItemsChange: (items: SketchItem[]) => void;
+  onClear?: () => void;
   onSave: () => Promise<void> | void;
   onCancel?: () => void;
   saving?: boolean;
@@ -58,7 +22,9 @@ interface Props {
 
 export function SketchEditor({
   items,
+  hasPreservedRawItems = false,
   onItemsChange,
+  onClear,
   onSave,
   onCancel,
   saving = false,
@@ -69,7 +35,7 @@ export function SketchEditor({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [tool, setTool] = useState<Tool>('pen');
-  const [color, setColor] = useState('#1c1b1a');
+  const [color, setColor] = useState(() => readDefaultSketchToolColor());
   const [size, setSize] = useState(2);
   const drawingRef = useRef<SketchItem | null>(null);
   const [, force] = useState(0);
@@ -191,8 +157,15 @@ export function SketchEditor({
     onItemsChange(items.slice(0, -1));
   }
   function handleClear() {
+    if (onClear) {
+      onClear();
+      return;
+    }
     onItemsChange([]);
   }
+
+  const canClear = items.length > 0 || hasPreservedRawItems;
+  const canSave = dirty || items.length > 0 || hasPreservedRawItems;
 
   function submitTextModal() {
     const text = textModalValue.trim();
@@ -246,7 +219,7 @@ export function SketchEditor({
         <button className="ghost" onClick={handleUndo} disabled={items.length === 0}>
           {t('sketch.undo')}
         </button>
-        <button className="ghost" onClick={handleClear} disabled={items.length === 0}>
+        <button className="ghost" onClick={handleClear} disabled={!canClear}>
           {t('sketch.clear')}
         </button>
         <span className="sketch-spacer" />
@@ -262,7 +235,7 @@ export function SketchEditor({
         <button
           className="primary"
           onClick={() => void onSave()}
-          disabled={saving || items.length === 0}
+          disabled={saving || !canSave}
         >
           {saving ? t('sketch.saving') : t('common.save')}
         </button>

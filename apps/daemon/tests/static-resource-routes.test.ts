@@ -40,6 +40,7 @@ describe('static resource mutation routes', () => {
             ARTIFACTS_DIR: path.join(tempRoot, 'artifacts'),
             BUNDLED_PETS_DIR: path.join(tempRoot, 'pets'),
             DESIGN_SYSTEMS_DIR: path.join(tempRoot, 'design-systems'),
+            DESIGN_TEMPLATES_DIR: path.join(tempRoot, 'design-templates'),
             OD_BIN: path.join(tempRoot, 'od'),
             PROJECT_ROOT: tempRoot,
             PROJECTS_DIR: path.join(tempRoot, 'projects'),
@@ -48,6 +49,7 @@ describe('static resource mutation routes', () => {
             RUNTIME_DATA_DIR_CANONICAL: path.join(tempRoot, 'data'),
             SKILLS_DIR: path.join(tempRoot, 'skills'),
             USER_DESIGN_SYSTEMS_DIR: path.join(tempRoot, 'user-design-systems'),
+            USER_DESIGN_TEMPLATES_DIR: path.join(tempRoot, 'user-design-templates'),
             USER_SKILLS_DIR: path.join(tempRoot, 'user-skills'),
           },
           resources: {
@@ -59,6 +61,8 @@ describe('static resource mutation routes', () => {
               catalogReadCount += 1;
               return [];
             },
+            listAllDesignTemplates: async () => [],
+            listAllSkillLikeEntries: async () => [],
             mimeFor: () => 'application/octet-stream',
           },
         });
@@ -85,6 +89,8 @@ describe('static resource mutation routes', () => {
     ['POST', '/api/skills/install'],
     ['DELETE', '/api/skills/demo-skill'],
     ['POST', '/api/design-systems/install'],
+    ['POST', '/api/design-systems/import/local'],
+    ['POST', '/api/design-systems/import/github'],
     ['DELETE', '/api/design-systems/demo-system'],
   ])('rejects cross-origin %s %s before catalog or filesystem work', async (method, route) => {
     catalogReadCount = 0;
@@ -96,12 +102,33 @@ describe('static resource mutation routes', () => {
       },
     };
     if (method === 'POST') {
-      init.body = JSON.stringify({ source: 'local', path: tempRoot });
+      init.body = JSON.stringify({
+        source: 'local',
+        path: tempRoot,
+        baseDir: tempRoot,
+        githubUrl: 'https://github.com/example/repo',
+      });
     }
     const res = await fetch(`${baseUrl}${route}`, init);
 
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'FORBIDDEN' });
+    expect(catalogReadCount).toBe(0);
+  });
+
+  it('returns a bad request for a missing local design-system import path', async () => {
+    catalogReadCount = 0;
+    const res = await fetch(`${baseUrl}/api/design-systems/import/local`, {
+      method: 'POST',
+      headers: {
+        Origin: baseUrl,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ baseDir: path.join(tempRoot, 'missing-project') }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'BAD_REQUEST' });
     expect(catalogReadCount).toBe(0);
   });
 });
