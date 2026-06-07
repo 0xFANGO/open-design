@@ -1,22 +1,26 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createTabToTracking } from '@open-design/contracts/analytics';
-import {
-  isOpenDesignHostAvailable,
-  pickAndImportHostProject,
-  type OpenDesignHostProjectImportSuccess,
-} from '@open-design/host';
+import { isOpenDesignHostAvailable, pickHostWorkingDir } from '@open-design/host';
+import type { OpenDesignHostProjectImportSuccess } from '@open-design/host';
 import { useAnalytics } from '../analytics/provider';
 import {
+  trackDesignSystemApplyResult,
   trackNewProjectModalElementClick,
   trackNewProjectModalSurfaceView,
   trackNewProjectModalTabClick,
 } from '../analytics/events';
 import type { ConnectorDetail } from '@open-design/contracts';
+import type {
+  TrackingDesignSystemApplyTargetKind,
+  TrackingDesignSystemOrigin,
+  TrackingDesignSystemStatusValue,
+} from '@open-design/contracts/analytics';
 
 import { useT } from '../i18n';
 import type { Dict } from '../i18n/types';
-import { fetchPromptTemplate } from '../providers/registry';
+import { fetchPromptTemplate, openFolderDialog } from '../providers/registry';
 import { isStoredMediaProviderEntryPresent } from '../state/config';
+import { isMediaProviderPickerReady } from '../media/provider-readiness';
 import type {
   AudioKind,
   DesignSystemSummary,
@@ -42,10 +46,17 @@ import {
   VIDEO_LENGTHS_SEC,
   VIDEO_MODELS,
 } from '../media/models';
+import {
+  mergeAihubmixModels,
+  useAIHubMixImageModels,
+  useAIHubMixVideoModels,
+  useAIHubMixAudioModels,
+} from '../media/aihubmix-image-models';
 import { formatPickAndImportFailure } from '../utils/pickAndImportError';
 import { Icon } from './Icon';
 import { Skeleton } from './Loading';
 import { Toast } from './Toast';
+import { useOpenFolderImport } from './useOpenFolderImport';
 
 // Snapshot of a curated prompt template, captured at New Project time and
 // folded into ProjectMetadata.promptTemplate. The user may have edited the
@@ -106,7 +117,12 @@ export interface CreateInput {
   skillId: string | null;
   designSystemId: string | null;
   metadata: ProjectMetadata;
+  userWorkingDirToken?: string;
 }
+
+export type ImportClaudeDesignOutcome =
+  | { ok: true }
+  | { ok: false; message?: string; details?: string };
 
 interface Props {
   skills: SkillSummary[];
@@ -116,11 +132,11 @@ interface Props {
   onDeleteTemplate?: (id: string) => Promise<boolean>;
   promptTemplates: PromptTemplateSummary[];
   onCreate: (input: CreateInput & { requestId?: string }) => void;
-  onImportClaudeDesign?: (file: File) => Promise<void> | void;
-  // Web fallback: the user types an absolute baseDir into the manual
-  // input and the renderer POSTs `/api/import/folder` itself. Browser
-  // builds have no `shell.openPath` surface, so the renderer naming a
-  // path here cannot escalate (PR #974 trust model).
+  onImportClaudeDesign?: (
+    file: File,
+  ) => Promise<ImportClaudeDesignOutcome | void> | ImportClaudeDesignOutcome | void;
+  // Local-server flow: the daemon-owned native folder picker returns the
+  // selected baseDir, then the renderer POSTs `/api/import/folder`.
   onImportFolder?: (baseDir: string) => Promise<void> | void;
   // Host flow: the desktop main process owns the picker dialog and
   // the import call atomically (`pickAndImport` IPC). The renderer
@@ -144,6 +160,66 @@ const TAB_LABEL_KEYS: Record<CreateTab, keyof Dict> = {
   media: 'newproj.tabMedia',
   other: 'newproj.tabOther',
 };
+
+// Maps the New Project tab + media surface to the apply-result target
+// kind enum. `media` collapses to image/video/audio inside callers;
+// this helper covers the non-media tabs and the live-artifact special
+// case. Media surfaces map case-by-case at the call site.
+function newProjectTabToApplyKind(
+  tab: CreateTab,
+): TrackingDesignSystemApplyTargetKind {
+  switch (tab) {
+    case 'prototype':
+      return 'prototype';
+    case 'deck':
+      return 'slide_deck';
+    case 'live-artifact':
+      return 'live_artifact';
+    case 'media':
+      // Media tab has its own surface picker; the apply emission
+      // happens before the user selects image/video/audio, so we
+      // mark it `unknown` rather than guessing. The picker is also
+      // typically hidden under media but the helper stays total.
+      return 'unknown';
+    case 'template':
+    case 'other':
+      return 'unknown';
+  }
+}
+
+// Maps a `DesignSystemSummary.source` value to the DS origin enum used
+// by `design_system_apply_result.design_system_source`. The summary
+// shape only carries `'built-in' | 'installed' | 'user'`; we map them
+// onto the doc's enum: user → manual_create, built-in → official_preset,
+// installed → template.
+function deriveDesignSystemOrigin(
+  system: DesignSystemSummary | undefined,
+): TrackingDesignSystemOrigin | undefined {
+  if (!system) return undefined;
+  switch (system.source) {
+    case 'user':
+      return 'manual_create';
+    case 'built-in':
+      return 'official_preset';
+    case 'installed':
+      return 'template';
+    default:
+      return 'unknown';
+  }
+}
+
+function deriveDesignSystemStatusValue(
+  system: DesignSystemSummary | undefined,
+): TrackingDesignSystemStatusValue | undefined {
+  if (!system) return undefined;
+  switch (system.status) {
+    case 'draft':
+    case 'published':
+      return system.status;
+    default:
+      return 'unknown';
+  }
+}
 
 const MEDIA_SURFACE_LABEL_KEYS: Record<MediaSurface, keyof Dict> = {
   image: 'newproj.surfaceImage',
@@ -195,14 +271,13 @@ export function NewProjectPanel({
   const analytics = useAnalytics();
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const [importing, setImporting] = useState(false);
-  const [baseDir, setBaseDir] = useState('');
-  const [importingFolder, setImportingFolder] = useState(false);
-  // PR #974 round-4 (mrcfps): pickAndImport now returns structured
-  // failure shapes (`desktop auth secret not registered`, `web sidecar
-  // URL not available`, `daemon returned HTTP X`) — surfacing them
-  // gives the user a recovery hint instead of a silent no-op.
-  // Shape: `{ message, details? }`. `null` means no toast.
-  const [importFolderError, setImportFolderError] = useState<
+  const [importZipError, setImportZipError] = useState<
+    { message: string; details?: string } | null
+  >(null);
+  const [workingDir, setWorkingDir] = useState<string | null>(null);
+  const [workingDirToken, setWorkingDirToken] = useState<string | null>(null);
+  const [workingDirPicking, setWorkingDirPicking] = useState(false);
+  const [workingDirError, setWorkingDirError] = useState<
     { message: string; details?: string } | null
   >(null);
   const [tab, setTab] = useState<CreateTab>(initialTab);
@@ -316,6 +391,47 @@ export function NewProjectPanel({
     setSelectedDsIds(initialDefaultDsSelection);
   }, [dsSelectionTouched, initialDefaultDsSelection]);
 
+  // Fires `design_system_apply_result` with `auto_select` when the
+  // picker mounts/refreshes and pre-selects the user's default DS
+  // without an explicit click. Only emits once per default-id while
+  // the picker is showing, and only while the user hasn't manually
+  // changed the selection (so the dashboard separates auto vs manual
+  // attribution). The picker visibility guard skips media tabs where
+  // the DS picker isn't rendered.
+  const autoSelectFiredForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!showDesignSystemPicker) return;
+    if (dsSelectionTouched) return;
+    const primary = initialDefaultDsSelection[0];
+    if (!primary) return;
+    if (autoSelectFiredForRef.current === primary) return;
+    autoSelectFiredForRef.current = primary;
+    const picked = designSystems.find((d) => d.id === primary);
+    trackDesignSystemApplyResult(analytics.track, {
+      page_name: 'home',
+      area: 'design_system_picker',
+      action: 'auto_select',
+      result: 'success',
+      target_project_kind: newProjectTabToApplyKind(tab),
+      design_system_id: primary,
+      design_system_source: deriveDesignSystemOrigin(picked),
+      design_system_status: deriveDesignSystemStatusValue(picked),
+      design_system_applied: true,
+      design_system_selection_mode: 'default',
+      is_default: true,
+      is_auto_selected: true,
+      available_design_system_count: designSystems.length,
+      duration_ms: 0,
+    });
+  }, [
+    analytics.track,
+    designSystems,
+    dsSelectionTouched,
+    initialDefaultDsSelection,
+    showDesignSystemPicker,
+    tab,
+  ]);
+
   // When entering the template tab, snap to the first user-saved template
   // if there is one (and we don't already have a valid pick). The template
   // tab no longer offers a built-in fallback — the entire point is to
@@ -387,7 +503,9 @@ export function NewProjectPanel({
   function handleImagePromptTemplate(pick: PromptTemplatePick | null) {
     setImagePromptTemplate(pick);
     const m = pick?.summary.model;
-    if (m && IMAGE_MODELS.some((x) => x.id === m)) setImageModel(m);
+    // Accept catalogued ids plus any live AIHubMix catalogue id (aihubmix-*),
+    // which renders dynamically and won't appear in the static IMAGE_MODELS.
+    if (m && (IMAGE_MODELS.some((x) => x.id === m) || m.startsWith('aihubmix-'))) setImageModel(m);
     const a = pick?.summary.aspect;
     if (a && (MEDIA_ASPECTS as readonly string[]).includes(a)) {
       setImageAspect(a as MediaAspect);
@@ -458,6 +576,51 @@ export function NewProjectPanel({
   function handleDesignSystemChange(ids: string[]) {
     setDsSelectionTouched(true);
     setSelectedDsIds(ids);
+    const previousPrimary = selectedDsIds[0] ?? null;
+    const nextPrimary = ids[0] ?? null;
+    // Only emit when the primary actually changed; secondary reorders
+    // inside multi-select don't count as a fresh apply.
+    if (previousPrimary === nextPrimary) return;
+    const targetKind = newProjectTabToApplyKind(tab);
+    if (ids.length === 0) {
+      trackDesignSystemApplyResult(analytics.track, {
+        page_name: 'home',
+        area: 'design_system_picker',
+        action: 'clear_selection',
+        result: 'success',
+        target_project_kind: targetKind,
+        design_system_applied: false,
+        design_system_selection_mode: 'none',
+        is_default: false,
+        is_auto_selected: false,
+        available_design_system_count: designSystems.length,
+        duration_ms: 0,
+      });
+      return;
+    }
+    if (!nextPrimary) return;
+    const picked = designSystems.find((d) => d.id === nextPrimary);
+    const isDefault = nextPrimary === defaultDesignSystemId;
+    trackDesignSystemApplyResult(analytics.track, {
+      page_name: 'home',
+      area: 'design_system_picker',
+      action: 'select_design_system',
+      result: 'success',
+      target_project_kind: targetKind,
+      design_system_id: nextPrimary,
+      design_system_source: deriveDesignSystemOrigin(picked),
+      design_system_status: deriveDesignSystemStatusValue(picked),
+      design_system_applied: true,
+      design_system_selection_mode: isDefault ? 'default' : 'manual',
+      is_default: isDefault,
+      // `is_auto_selected` reports whether this row was picked by the
+      // app (initial default selection from `initialDefaultDsSelection`)
+      // rather than by the user. Once `dsSelectionTouched` is set we
+      // know any subsequent change came from a click.
+      is_auto_selected: false,
+      available_design_system_count: designSystems.length,
+      duration_ms: 0,
+    });
   }
 
   useEffect(() => {
@@ -545,9 +708,39 @@ export function NewProjectPanel({
       metadata: {
         ...metadata,
         nameSource: trimmedName ? 'user' : 'generated',
+        ...(workingDir ? { userWorkingDir: workingDir } : {}),
       },
+      ...(workingDirToken ? { userWorkingDirToken: workingDirToken } : {}),
       requestId,
     });
+  }
+
+  async function handlePickWorkingDir() {
+    if (workingDirPicking) return;
+    setWorkingDirPicking(true);
+    setWorkingDirError(null);
+    try {
+      if (isOpenDesignHostAvailable()) {
+        const result = await pickHostWorkingDir();
+        if (result.ok) {
+          setWorkingDir(result.baseDir);
+          setWorkingDirToken(result.token);
+          return;
+        }
+        if ('canceled' in result && result.canceled) return;
+        setWorkingDirError({
+          message: `Couldn't open the folder picker (${'reason' in result ? result.reason : 'host unavailable'}). Please update Open Design and try again.`,
+        });
+        return;
+      }
+      const picked = await openFolderDialog();
+      if (picked) {
+        setWorkingDir(picked);
+        setWorkingDirToken(null);
+      }
+    } finally {
+      setWorkingDirPicking(false);
+    }
   }
 
   async function handleImportPicked(ev: React.ChangeEvent<HTMLInputElement>) {
@@ -555,67 +748,29 @@ export function NewProjectPanel({
     ev.target.value = '';
     if (!file || !onImportClaudeDesign) return;
     setImporting(true);
+    setImportZipError(null);
     try {
-      await onImportClaudeDesign(file);
+      const result = await onImportClaudeDesign(file);
+      if (result?.ok === false) {
+        setImportZipError({
+          message: result.message ? `Import failed: ${result.message}` : 'Import failed',
+          details: result.details,
+        });
+      }
+    } catch (err) {
+      setImportZipError({
+        message: err instanceof Error ? `Import failed: ${err.message}` : 'Import failed',
+      });
     } finally {
       setImporting(false);
     }
   }
 
-  // PR #974: the host bridge does not expose raw folder paths to the
-  // renderer. The desktop flow uses `pickAndImport`, which performs the
-  // picker + the HMAC-gated import atomically in the main process and
-  // returns host-owned project identifiers.
-  // The web fallback continues to use the manual baseDir input —
-  // browser builds have no `shell.openPath` surface so a renderer-named
-  // path cannot escalate.
-  const hasHostPickAndImport = isOpenDesignHostAvailable();
-
-  async function handleOpenFolder() {
-    if (hasHostPickAndImport) {
-      if (!onImportFolderResponse) return;
-      setImportFolderError(null);
-      setImportingFolder(true);
-      try {
-        const result = await pickAndImportHostProject({
-          skillId: skillIdForTab,
-        });
-        if (!result) return;
-        if (result.ok === true) {
-          await onImportFolderResponse(result);
-          return;
-        }
-        // Round-4 (mrcfps #2): every non-OK shape used to fall through
-        // a silent `return`. Reserve silent for the explicit cancel
-        // case; surface the structured reason for everything else
-        // (auth-not-registered, web-sidecar-down, daemon HTTP errors,
-        // network errors). The pickAndImport handler already pre-shapes
-        // these into a `{ ok: false, reason, details? }` envelope.
-        if ('canceled' in result && result.canceled === true) return;
-        setImportFolderError(formatPickAndImportFailure(result));
-      } finally {
-        setImportingFolder(false);
-      }
-      return;
-    }
-    if (!onImportFolder) return;
-    const trimmed = baseDir.trim();
-    if (!trimmed) {
-      setImportFolderError({ message: 'Path cannot be empty' });
-      return;
-    }
-    setImportFolderError(null);
-    setImportingFolder(true);
-    try {
-      await onImportFolder(trimmed);
-    } catch (err) {
-      setImportFolderError({
-        message: err instanceof Error ? err.message : 'Failed to import folder',
-      });
-    } finally {
-      setImportingFolder(false);
-    }
-  }
+  const folderImport = useOpenFolderImport({
+    skillId: skillIdForTab,
+    onImportFolder,
+    onImportFolderResponse,
+  });
 
   return (
     <div className="newproj" data-testid="new-project-panel">
@@ -674,13 +829,47 @@ export function NewProjectPanel({
           ) : null}
         </h3>
 
-        <input
-          className="newproj-name"
-          data-testid="new-project-name"
-          placeholder={t('newproj.namePlaceholder')}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
+        <div className="newproj-name-row">
+          <input
+            className="newproj-name"
+            data-testid="new-project-name"
+            placeholder={t('newproj.namePlaceholder')}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+
+        <div className="newproj-working-dir-row">
+          <button
+            type="button"
+            className={`ghost newproj-working-dir${workingDir ? ' picked' : ''}`}
+            onClick={() => void handlePickWorkingDir()}
+            disabled={workingDirPicking}
+            title={workingDir ?? t('workingDirPicker.homeTitle')}
+          >
+            <Icon name="folder" size={13} />
+            <span>
+              {workingDirPicking
+                ? t('workingDirPicker.processing')
+                : workingDir
+                  ? displayFolderName(workingDir)
+                  : t('workingDirPicker.select')}
+            </span>
+          </button>
+          {workingDir ? (
+            <button
+              type="button"
+              className="newproj-working-dir-clear"
+              onClick={() => {
+                setWorkingDir(null);
+                setWorkingDirToken(null);
+              }}
+              aria-label={t('workingDirPicker.clearAria')}
+            >
+              <Icon name="close" size={10} />
+            </button>
+          ) : null}
+        </div>
 
         {showDesignSystemPicker ? (
           <DesignSystemPicker
@@ -877,42 +1066,51 @@ export function NewProjectPanel({
             </button>
           </>
         ) : null}
-        {(hasHostPickAndImport ? onImportFolderResponse : onImportFolder) ? (
+        {folderImport.available ? (
           <div className="newproj-open-folder">
-            {!hasHostPickAndImport ? (
-              <input
-                type="text"
-                className="newproj-folder-input"
-                placeholder="/path/to/project"
-                value={baseDir}
-                onChange={(e) => setBaseDir(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') void handleOpenFolder(); }}
-                disabled={importingFolder}
-              />
-            ) : null}
             <button
               type="button"
               className="ghost newproj-import"
-              disabled={(!hasHostPickAndImport && !baseDir.trim()) || importingFolder}
-              onClick={() => void handleOpenFolder()}
+              disabled={folderImport.importing}
+              onClick={() => void folderImport.openFolder()}
             >
               <Icon name="folder" size={13} />
-              <span>{importingFolder ? 'Opening…' : 'Open folder'}</span>
+              <span>{folderImport.importing ? 'Opening...' : 'Open folder'}</span>
             </button>
           </div>
         ) : null}
       </div>
       <div className="newproj-footer">{t('newproj.privacyFooter')}</div>
-      {importFolderError ? (
+      {importZipError ? (
         <Toast
-          message={importFolderError.message}
-          details={importFolderError.details ?? null}
+          message={importZipError.message}
+          details={importZipError.details ?? null}
           ttlMs={6000}
-          onDismiss={() => setImportFolderError(null)}
+          onDismiss={() => setImportZipError(null)}
+        />
+      ) : null}
+      {folderImport.error ? (
+        <Toast
+          message={folderImport.error.message}
+          details={folderImport.error.details ?? null}
+          ttlMs={6000}
+          onDismiss={folderImport.clearError}
+        />
+      ) : null}
+      {workingDirError ? (
+        <Toast
+          message={workingDirError.message}
+          details={workingDirError.details ?? null}
+          ttlMs={6000}
+          onDismiss={() => setWorkingDirError(null)}
         />
       ) : null}
     </div>
   );
+}
+
+function displayFolderName(path: string): string {
+  return path.split(/[/\\]/).filter(Boolean).pop() ?? path;
 }
 
 function PlatformPicker({
@@ -2167,13 +2365,16 @@ function MediaProjectOptions(props:
     }
 ) {
   const t = useT();
+  const aihubmixImageModels = useAIHubMixImageModels();
+  const aihubmixVideoModels = useAIHubMixVideoModels();
+  const aihubmixAudioModels = useAIHubMixAudioModels();
 
   if (props.surface === 'image') {
     return (
       <div className="newproj-media-options">
         <MediaModelCards
           label={t('newproj.modelLabel')}
-          models={supportedModels('image', IMAGE_MODELS)}
+          models={supportedModels('image', mergeAihubmixModels(IMAGE_MODELS, aihubmixImageModels))}
           mediaProviders={props.mediaProviders}
           value={props.imageModel}
           onChange={props.onImageModel}
@@ -2192,7 +2393,7 @@ function MediaProjectOptions(props:
       <div className="newproj-media-options">
         <MediaModelCards
           label={t('newproj.modelLabel')}
-          models={supportedModels('video', VIDEO_MODELS)}
+          models={supportedModels('video', mergeAihubmixModels(VIDEO_MODELS, aihubmixVideoModels))}
           mediaProviders={props.mediaProviders}
           value={props.videoModel}
           onChange={props.onVideoModel}
@@ -2214,7 +2415,12 @@ function MediaProjectOptions(props:
     );
   }
 
-  const models = supportedModels('audio', AUDIO_MODELS_BY_KIND[props.audioKind]);
+  // AIHubMix's live catalogue is speech (TTS) only; music/sfx stay static.
+  const audioBase =
+    props.audioKind === 'speech'
+      ? mergeAihubmixModels(AUDIO_MODELS_BY_KIND.speech, aihubmixAudioModels)
+      : AUDIO_MODELS_BY_KIND[props.audioKind];
+  const models = supportedModels('audio', audioBase);
   const audioDurations = props.audioKind === 'sfx'
     ? SFX_AUDIO_DURATIONS_SEC
     : AUDIO_DURATIONS_SEC;
@@ -2260,9 +2466,9 @@ function MediaProjectOptions(props:
 
 export function supportedModels(surface: 'image' | 'video' | 'audio', models: MediaModel[]): MediaModel[] {
   const supportedProviders: Record<'image' | 'video' | 'audio', Set<string>> = {
-    image: new Set(['openai', 'volcengine', 'grok', 'nanobanana']),
-    video: new Set(['volcengine', 'hyperframes', 'grok']),
-    audio: new Set(['minimax', 'fishaudio', 'senseaudio', 'elevenlabs', 'openai', 'volcengine']),
+    image: new Set(['openai', 'volcengine', 'grok', 'nanobanana', 'openrouter', 'imagerouter', 'leonardo', 'custom-image', 'aihubmix']),
+    video: new Set(['volcengine', 'hyperframes', 'grok', 'openrouter', 'imagerouter', 'aihubmix']),
+    audio: new Set(['minimax', 'fishaudio', 'senseaudio', 'elevenlabs', 'openai', 'volcengine', 'aihubmix']),
   };
   return models.filter((model) => {
     const provider = findProvider(model.provider);
@@ -2302,6 +2508,7 @@ function MediaModelCards({
     for (const model of models) {
       const provider = findProvider(model.provider);
       const providerId = provider?.id ?? model.provider;
+      if (!isMediaProviderPickerReady(providerId, mediaProviders)) continue;
       const entry = mediaProviders?.[providerId];
       const configured =
         provider?.credentialsRequired === false ||
@@ -2332,6 +2539,16 @@ function MediaModelCards({
     }
     return null;
   }, [groups, value]);
+  const firstAvailableModelId = groups[0]?.models[0]?.id ?? null;
+
+  useEffect(() => {
+    if (selected) return;
+    if (firstAvailableModelId) {
+      onChange(firstAvailableModelId);
+      return;
+    }
+    if (value) onChange('');
+  }, [firstAvailableModelId, onChange, selected, value]);
 
   const filteredGroups = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -2635,28 +2852,31 @@ function buildMetadata(input: {
   }
   if (input.tab === 'media') {
     if (input.mediaSurface === 'image') {
+      const imageModel = input.imageModel.trim();
       return {
         kind,
-        imageModel: input.imageModel,
+        ...(imageModel ? { imageModel } : {}),
         imageAspect: input.imageAspect,
         ...buildPromptTemplateMetadata(input.promptTemplate),
         ...inspirations,
       };
     }
     if (input.mediaSurface === 'video') {
+      const videoModel = input.videoModel.trim();
       return {
         kind,
-        videoModel: input.videoModel,
+        ...(videoModel ? { videoModel } : {}),
         videoAspect: input.videoAspect,
         videoLength: input.videoLength,
         ...buildPromptTemplateMetadata(input.promptTemplate),
         ...inspirations,
       };
     }
+    const audioModel = input.audioModel.trim();
     return {
       kind,
       audioKind: input.audioKind,
-      audioModel: input.audioModel,
+      ...(audioModel ? { audioModel } : {}),
       audioDuration: input.audioDuration,
       ...(input.audioKind === 'speech' && input.voice.trim()
         ? { voice: input.voice.trim() }

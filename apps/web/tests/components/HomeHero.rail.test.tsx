@@ -22,7 +22,13 @@ afterEach(() => {
   cleanup();
 });
 
-function makePlugin(id: string, mode: string, title = id): InstalledPluginRecord {
+function makePlugin(
+  id: string,
+  mode: string,
+  title = id,
+  extraTags: string[] = [],
+  options: { query?: string | null } = {},
+): InstalledPluginRecord {
   return {
     id,
     title,
@@ -36,11 +42,13 @@ function makePlugin(id: string, mode: string, title = id): InstalledPluginRecord
       version: '1.0.0',
       title,
       description: 'Plugin preset fixture',
-      tags: [mode],
+      tags: [mode, ...extraTags],
       od: {
         mode,
         useCase: {
-          query: `Create with {{topic}} using ${title}`,
+          ...(options.query !== null
+            ? { query: options.query ?? `Create with {{topic}} using ${title}` }
+            : {}),
         },
         inputs: [
           {
@@ -110,6 +118,20 @@ describe('HomeHero intent rail', () => {
     }
   });
 
+  it('renders execution switcher inside the input footer when provided', () => {
+    renderHero({
+      executionSwitcher: (
+        <button type="button" data-testid="home-execution-switcher">
+          Local CLI
+        </button>
+      ),
+    });
+
+    const switcher = screen.getByTestId('home-execution-switcher');
+    const footer = switcher.closest('.home-hero__input-foot');
+    expect(footer).toBeTruthy();
+  });
+
   it('forwards the matching chip descriptor when clicked', () => {
     const { onPickChip } = renderHero();
     fireEvent.click(screen.getByTestId('home-hero-rail-image'));
@@ -132,6 +154,37 @@ describe('HomeHero intent rail', () => {
     expect(onClearActiveChip).toHaveBeenCalledTimes(1);
   });
 
+  it('uses the active creation chip as the only clear control for a chip-bound plugin', () => {
+    const activePlugin = makePlugin('example-image-a', 'image', 'Product image');
+    renderHero({
+      activeChipId: 'image',
+      activePluginTitle: 'Product image',
+      activePluginRecord: activePlugin,
+      showActivePluginChip: true,
+    });
+
+    expect(screen.getByTestId('home-hero-active-plugin')).toBeTruthy();
+    expect(screen.getByTestId('home-hero-active-type-chip')).toBeTruthy();
+    expect(screen.queryByLabelText('Clear active plugin')).toBeNull();
+  });
+
+  it('keeps the active plugin clear control when no creation chip is active', () => {
+    const activePlugin = makePlugin('example-image-a', 'image', 'Product image');
+    const onClearActivePlugin = vi.fn();
+    renderHero({
+      activeChipId: null,
+      activePluginTitle: 'Product image',
+      activePluginRecord: activePlugin,
+      onClearActivePlugin,
+      showActivePluginChip: true,
+    });
+
+    const clear = screen.getByLabelText('Clear active plugin');
+    fireEvent.click(clear);
+
+    expect(onClearActivePlugin).toHaveBeenCalledTimes(1);
+  });
+
   it('shows prompt examples below the composer for the selected tab', () => {
     const onPromptChange = vi.fn();
     renderHero({ activeChipId: 'deck', onPromptChange });
@@ -144,6 +197,9 @@ describe('HomeHero intent rail', () => {
     expect(onPromptChange).toHaveBeenCalledWith(
       'Research the market opportunity for a product launch, including competitors, target users, pricing hypotheses, and launch narrative',
     );
+    // The top "selected example" pill was removed from the composer; picking an
+    // example still seeds the prompt but no longer surfaces a dismissible chip.
+    expect(screen.queryByTestId('home-hero-active-example')).toBeNull();
   });
 
   it('shows matching plugin presets in the example prompt area for the selected tab', () => {
@@ -156,8 +212,9 @@ describe('HomeHero intent rail', () => {
 
     const presets = screen.getAllByTestId('home-hero-plugin-preset');
     expect(presets).toHaveLength(1);
+    // The preset card is now a thumbnail + name only; the prompt blurb was
+    // dropped from the card face but is still passed through on click below.
     expect(presets[0]?.textContent).toContain('Investor deck');
-    expect(presets[0]?.textContent).toContain('a focused brief');
 
     fireEvent.click(presets[0]!);
     expect(onPickExamplePlugin).toHaveBeenCalledWith(
@@ -165,6 +222,137 @@ describe('HomeHero intent rail', () => {
       'deck',
       'Create with a focused brief using Investor deck',
     );
+  });
+
+  it('orders curated example presets first for the selected artifact type', () => {
+    const ordinaryDeck = makePlugin('example-ordinary-deck', 'deck', 'Ordinary deck');
+    const capsule = makePlugin(
+      'example-html-ppt-zhangzara-capsule',
+      'deck',
+      'Html Ppt Zhangzara Capsule',
+    );
+    const creativeMode = makePlugin(
+      'example-html-ppt-zhangzara-creative-mode',
+      'deck',
+      'Html Ppt Zhangzara Creative Mode',
+    );
+    renderHero({
+      activeChipId: 'deck',
+      pluginOptions: [ordinaryDeck, capsule, creativeMode],
+    });
+
+    const presets = screen.getAllByTestId('home-hero-plugin-preset');
+    expect(presets.map((preset) => preset.getAttribute('data-plugin-id'))).toEqual([
+      'example-html-ppt-zhangzara-creative-mode',
+      'example-html-ppt-zhangzara-capsule',
+      'example-ordinary-deck',
+    ]);
+  });
+
+  it('keeps curated presets even when they rely on fallback prompt text', () => {
+    const otakuDance = makePlugin(
+      'image-template-infographic-otaku-dance-choreography-breakdown-gokurakujodo-16-panels',
+      'image',
+      'Infographic - Otaku Dance Choreography Breakdown (Gokuraku Jodo, 16 Panels)',
+      ['image-template'],
+      { query: null },
+    );
+    const ordinaryImage = makePlugin(
+      'image-template-ordinary',
+      'image',
+      'Ordinary image',
+      ['image-template'],
+    );
+    renderHero({
+      activeChipId: 'image',
+      pluginOptions: [ordinaryImage, otakuDance],
+    });
+
+    const presets = screen.getAllByTestId('home-hero-plugin-preset');
+    expect(presets[0]?.getAttribute('data-plugin-id')).toBe(
+      'image-template-infographic-otaku-dance-choreography-breakdown-gokurakujodo-16-panels',
+    );
+  });
+
+  it('keeps Hatch Pet at the end of the image example presets', () => {
+    const hatchPet = makePlugin('example-hatch-pet', 'image', 'Hatch Pet');
+    const imagePoster = makePlugin('image-template-poster', 'image', 'Image Poster');
+    const stoneInfographic = makePlugin('image-template-stone', 'image', 'Stone Infographic');
+    renderHero({
+      activeChipId: 'image',
+      pluginOptions: [hatchPet, imagePoster, stoneInfographic],
+    });
+
+    const presets = screen.getAllByTestId('home-hero-plugin-preset');
+    expect(presets.map((preset) => preset.textContent)).toEqual([
+      expect.stringContaining('Image Poster'),
+      expect.stringContaining('Stone Infographic'),
+      expect.stringContaining('Hatch Pet'),
+    ]);
+  });
+
+  it('moves live artifact presets out of Image and into Live artifact examples', () => {
+    const imagePoster = makePlugin('image-template-poster', 'image', 'Image Poster');
+    const liveDashboard = makePlugin(
+      'example-live-dashboard',
+      'prototype',
+      'Live Dashboard',
+      ['live-dashboard'],
+    );
+    const notionDashboard = makePlugin(
+      'image-template-notion-team-dashboard-live-artifact',
+      'image',
+      'Notion-style Team Dashboard (Live Artifact)',
+      ['live-artifact'],
+    );
+    const socialTracker = makePlugin(
+      'example-social-media-matrix-tracker-template',
+      'template',
+      'Social Media Matrix Tracker Template',
+      ['live-artifacts'],
+    );
+    const tradingDashboard = makePlugin(
+      'example-trading-analysis-dashboard-template',
+      'template',
+      'Trading Analysis Dashboard Template',
+      ['live-artifacts'],
+    );
+    const liveArtifact = makePlugin(
+      'example-live-artifact',
+      'prototype',
+      'Live Artifact',
+      ['live-artifact'],
+    );
+    renderHero({
+      activeChipId: 'image',
+      pluginOptions: [imagePoster, liveDashboard, notionDashboard],
+    });
+
+    let presets = screen.getAllByTestId('home-hero-plugin-preset');
+    expect(presets).toHaveLength(1);
+    expect(presets[0]?.textContent).toContain('Image Poster');
+
+    cleanup();
+    renderHero({
+      activeChipId: 'live-artifact',
+      pluginOptions: [
+        imagePoster,
+        liveArtifact,
+        tradingDashboard,
+        notionDashboard,
+        socialTracker,
+        liveDashboard,
+      ],
+    });
+
+    presets = screen.getAllByTestId('home-hero-plugin-preset');
+    expect(presets.map((preset) => preset.getAttribute('data-plugin-id'))).toEqual([
+      'example-live-dashboard',
+      'image-template-notion-team-dashboard-live-artifact',
+      'example-social-media-matrix-tracker-template',
+      'example-trading-analysis-dashboard-template',
+      'example-live-artifact',
+    ]);
   });
 
   it('disables every visible chip while a plugin apply is in flight', () => {

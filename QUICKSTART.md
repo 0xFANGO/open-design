@@ -1,6 +1,6 @@
 # Quickstart
 
-<p align="center"><b>English</b> · <a href="QUICKSTART.pt-BR.md">Português (Brasil)</a> · <a href="QUICKSTART.de.md">Deutsch</a> · <a href="QUICKSTART.fr.md">Français</a> · <a href="QUICKSTART.ja-JP.md">日本語</a> · <a href="QUICKSTART.zh-CN.md">简体中文</a> · <a href="QUICKSTART.zh-TW.md">繁體中文</a></p>
+<p align="center"><b>English</b> · <a href="docs/i18n/QUICKSTART.pt-BR.md">Português (Brasil)</a> · <a href="docs/i18n/QUICKSTART.de.md">Deutsch</a> · <a href="docs/i18n/QUICKSTART.fr.md">Français</a> · <a href="docs/i18n/QUICKSTART.ja-JP.md">日本語</a> · <a href="docs/i18n/QUICKSTART.zh-CN.md">简体中文</a> · <a href="docs/i18n/QUICKSTART.zh-TW.md">繁體中文</a></p>
 
 Run the full product locally.
 
@@ -55,8 +55,24 @@ docker compose version
 
 From the repository root:
 
+1. Change to the deploy directory and copy the environment template:
+
+   ```bash
+   cd deploy
+   cp .env.example .env
+   ```
+
+2. Generate a secure token:
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+3. Open `.env` in your editor, find `OD_API_TOKEN=`, and paste the generated token there.
+
+Then start the service:
+
 ```bash
-cd deploy
 docker compose up -d
 ```
 
@@ -107,7 +123,13 @@ docker compose down -v
 
 ## Environment Configuration
 
-Create a `deploy/.env` file to override the default configuration:
+Create a `deploy/.env` file to override the default configuration. Start from the provided example:
+
+```bash
+cp deploy/.env.example deploy/.env
+```
+
+Edit `deploy/.env` to set your own token and adjust other values as needed:
 
 ```env
 # Port exposed on the host
@@ -121,6 +143,10 @@ OPEN_DESIGN_ALLOWED_ORIGINS=https://yourdomain.com
 
 # Docker image tag
 OPEN_DESIGN_IMAGE=docker.io/vanjayak/open-design:latest
+
+# Required API token for daemon security
+# Generate one with: openssl rand -hex 32
+OD_API_TOKEN=
 ```
 
 ---
@@ -354,6 +380,7 @@ open-design/
 - **media generation says `OD_BIN` is missing or daemon URL is `:0`** — run the media dispatcher checks above. Do not resume the old CLI session; reopen the project from the Open Design app so the daemon can inject fresh `OD_*` variables.
 - **Codex loads too much plugin context** — start Open Design with `OD_CODEX_DISABLE_PLUGINS=1 pnpm tools-dev` to make daemon-spawned Codex processes run with `--disable plugins`.
 - **artifact never renders** — the model produced text without wrapping in `<artifact>`. Confirm the system prompt is going through (check daemon log) and consider switching to a more capable model or a stricter skill.
+- **`Authorization: Bearer <OD_API_TOKEN>` required on macOS** — Docker Desktop bridge networking makes the daemon see requests as non-loopback. Enable host networking in Docker Desktop and use `network_mode: host`. See [`deploy/README.md` — Docker Desktop on macOS](deploy/README.md#docker-desktop-on-macos).
 
 ## Mapping back to the vision
 

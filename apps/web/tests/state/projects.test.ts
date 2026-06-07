@@ -3,9 +3,11 @@ import {
   applyPlugin,
   contributeGeneratedPluginToOpenDesign,
   createPluginShareProject,
+  importClaudeDesignZip,
   importFolderProject,
   installGeneratedPluginFolder,
   listPlugins,
+  pickLocalFolderPath,
   publishGeneratedPluginToGitHub,
 } from '../../src/state/projects';
 
@@ -160,6 +162,35 @@ describe('installGeneratedPluginFolder', () => {
       message: 'Plugin validation failed.',
       log: ['Validating generated-plugin'],
     });
+  });
+});
+
+describe('importClaudeDesignZip', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('preserves daemon import errors from non-2xx responses', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ error: 'Unable to unpack Claude export.' }),
+      { status: 422, headers: { 'content-type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const file = new File(['zip-bytes'], 'claude-design.zip', {
+      type: 'application/zip',
+    });
+
+    await expect(importClaudeDesignZip(file)).rejects.toThrow(
+      'Unable to unpack Claude export.',
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/import/claude-design',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.any(FormData),
+      }),
+    );
   });
 });
 
@@ -338,5 +369,42 @@ describe('importFolderProject', () => {
 
     await expect(importFolderProject({ baseDir: '/some/path' }))
       .rejects.toThrow('Failed to import folder');
+  });
+});
+
+describe('pickLocalFolderPath', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns the selected native folder path', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ path: '/Users/me/Site' }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(pickLocalFolderPath()).resolves.toBe('/Users/me/Site');
+    expect(fetchMock).toHaveBeenCalledWith('/api/dialog/open-folder', {
+      method: 'POST',
+    });
+  });
+
+  it('returns null when the native picker is cancelled', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ path: null }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )));
+
+    await expect(pickLocalFolderPath()).resolves.toBeNull();
+  });
+
+  it('throws with the daemon picker error message', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ error: 'cross-origin request rejected' }),
+      { status: 403, headers: { 'content-type': 'application/json' } },
+    )));
+
+    await expect(pickLocalFolderPath()).rejects.toThrow('cross-origin request rejected');
   });
 });

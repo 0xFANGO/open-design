@@ -11,6 +11,7 @@
 import { getCollection, render } from 'astro:content';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import GoogleAnalytics from '../../_components/google-analytics.astro';
 import HeaderEnhancer from '../../_components/header-enhancer.astro';
 import { Header, type HeaderProps } from '../../_components/header';
 import LocaleSwitcherScript from '../../_components/locale-switcher-script.astro';
@@ -57,6 +58,7 @@ const headerHtml = renderToStaticMarkup(
     brandHref: '/',
     active: 'tutorials',
     locale,
+    currentPath: Astro.url.pathname,
   }),
 );
 
@@ -126,6 +128,7 @@ const tutorialCopy =
       datePublished={entry.data.date}
       category={tutorialCopy.category}
     />
+    <GoogleAnalytics />
   </head>
   <body>
     <div class='shell'>

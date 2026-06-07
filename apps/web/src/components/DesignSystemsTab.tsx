@@ -1,10 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Button } from '@open-design/components';
 import { useAnalytics } from '../analytics/provider';
 import {
   trackDesignSystemsTemplateCardClick,
   trackDesignSystemsTopClick,
+  trackDesignSystemStatusResult,
   trackPageView,
 } from '../analytics/events';
+import type {
+  TrackingDesignSystemStatusAction,
+  TrackingDesignSystemStatusValue,
+} from '@open-design/contracts/analytics';
 import { useI18n } from '../i18n';
 import {
   localizeDesignSystemCategory,
@@ -45,6 +51,9 @@ const CATEGORY_ORDER = [
 
 type SurfaceFilter = 'all' | Surface;
 type UserListFilter = 'all' | 'published' | 'draft';
+type PrimaryCollection = 'design-system' | 'template';
+type DesignSystemCollection = 'mine' | 'official' | 'enterprise';
+type TemplateCollection = 'mine' | 'enterprise';
 
 const SURFACE_PILLS: { value: SurfaceFilter; labelKey: 'examples.modeAll' | 'ds.surfaceWeb' | 'ds.surfaceImage' | 'ds.surfaceVideo' | 'ds.surfaceAudio' }[] = [
   { value: 'all', labelKey: 'examples.modeAll' },
@@ -62,10 +71,28 @@ function isUserSystem(system: DesignSystemSummary): boolean {
   return system.source === 'user' || system.isEditable === true;
 }
 
-function formatShortDate(value: string | undefined): string {
+// `system.status` is the DesignSystemSummary status string from the
+// daemon; map it onto the tracking enum used by
+// `design_system_status_result.status_before|status_after`. The
+// summary type today only carries `'draft' | 'published'`; the wider
+// tracking enum keeps room for `ready`/`failed`/`archived` once those
+// land server-side. Unknown values collapse to `'unknown'`.
+function mapStatusToTracking(
+  status: string | null | undefined,
+): TrackingDesignSystemStatusValue {
+  switch (status) {
+    case 'draft':
+    case 'published':
+      return status;
+    default:
+      return 'unknown';
+  }
+}
+
+function formatShortDate(value: number | string | undefined): string {
   if (!value) return 'just now';
-  const time = Date.parse(value);
-  if (!Number.isFinite(time)) return value;
+  const time = typeof value === 'number' ? value : Date.parse(value);
+  if (!Number.isFinite(time)) return String(value);
   return new Intl.DateTimeFormat(undefined, {
     month: 'short',
     day: 'numeric',
@@ -82,6 +109,7 @@ export function DesignSystemsTab({
   onCreate,
   onOpenSystem,
   onSystemsRefresh,
+  templates = [],
 }: Props) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
@@ -107,6 +135,9 @@ export function DesignSystemsTab({
   const [filter, setFilter] = useState('');
   const [userFilter, setUserFilter] = useState<UserListFilter>('all');
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [primaryCollection, setPrimaryCollection] = useState<PrimaryCollection>('design-system');
+  const [designSystemCollection, setDesignSystemCollection] = useState<DesignSystemCollection>('mine');
+  const [templateCollection, setTemplateCollection] = useState<TemplateCollection>('mine');
   const [surfaceFilter, setSurfaceFilter] = useState<SurfaceFilter>('all');
   const [category, setCategory] = useState<string>('All');
   // Cache fetched showcase HTML across re-renders so cards never re-flicker
@@ -224,67 +255,240 @@ export function DesignSystemsTab({
 
   async function togglePublished(system: DesignSystemSummary) {
     setBusyId(system.id);
+    const startedAt = performance.now();
+    const willPublish = system.status !== 'published';
+    const action: TrackingDesignSystemStatusAction = willPublish
+      ? 'publish'
+      : 'unpublish';
+    const statusBefore = mapStatusToTracking(system.status);
+    const isDefaultBefore = system.id === selectedId;
+    let succeeded = false;
+    let errorCode: string | undefined;
     try {
-      await updateDesignSystemDraft(system.id, {
-        status: system.status === 'published' ? 'draft' : 'published',
+      const updated = await updateDesignSystemDraft(system.id, {
+        status: willPublish ? 'published' : 'draft',
       });
+      succeeded = Boolean(updated);
+      if (!succeeded) errorCode = 'DS_STATUS_UPDATE_RETURNED_NULL';
       await refreshSystems();
+    } catch (err) {
+      errorCode = err instanceof Error
+        ? `DS_STATUS_UPDATE_THREW:${err.message.slice(0, 80)}`
+        : 'DS_STATUS_UPDATE_THREW';
+      throw err;
     } finally {
       setBusyId(null);
+      trackDesignSystemStatusResult(analytics.track, {
+        page_name: 'design_systems',
+        area: 'design_system_status',
+        action,
+        result: succeeded ? 'success' : 'failed',
+        design_system_id: system.id,
+        status_before: statusBefore,
+        status_after: succeeded
+          ? willPublish
+            ? 'published'
+            : 'draft'
+          : statusBefore,
+        is_default_before: isDefaultBefore,
+        is_default_after: isDefaultBefore,
+        error_code: errorCode,
+        duration_ms: Math.round(performance.now() - startedAt),
+      });
     }
   }
 
   async function deleteSystem(system: DesignSystemSummary) {
     const ok = window.confirm(`Delete "${system.title}"? This removes the draft design system from this device.`);
-    if (!ok) return;
+    if (!ok) {
+      trackDesignSystemStatusResult(analytics.track, {
+        page_name: 'design_systems',
+        area: 'design_system_status',
+        action: 'delete',
+        result: 'cancelled',
+        design_system_id: system.id,
+        status_before: mapStatusToTracking(system.status),
+        status_after: mapStatusToTracking(system.status),
+        is_default_before: system.id === selectedId,
+        is_default_after: system.id === selectedId,
+        duration_ms: 0,
+      });
+      return;
+    }
     setBusyId(system.id);
+    const startedAt = performance.now();
+    const statusBefore = mapStatusToTracking(system.status);
+    const wasDefault = system.id === selectedId;
+    let succeeded = false;
+    let errorCode: string | undefined;
     try {
       const deleted = await deleteDesignSystemDraft(system.id);
-      if (!deleted) return;
-      if (selectedId === system.id) {
+      succeeded = Boolean(deleted);
+      if (!succeeded) errorCode = 'DS_DELETE_RETURNED_FALSE';
+      if (succeeded && selectedId === system.id) {
         const fallback = systems.find((candidate) =>
           candidate.id !== system.id && isUserSystem(candidate),
         );
         if (fallback) onSelect(fallback.id);
       }
       await refreshSystems();
+    } catch (err) {
+      errorCode = err instanceof Error
+        ? `DS_DELETE_THREW:${err.message.slice(0, 80)}`
+        : 'DS_DELETE_THREW';
+      throw err;
     } finally {
       setBusyId(null);
+      trackDesignSystemStatusResult(analytics.track, {
+        page_name: 'design_systems',
+        area: 'design_system_status',
+        action: 'delete',
+        result: succeeded ? 'success' : 'failed',
+        design_system_id: system.id,
+        status_before: statusBefore,
+        status_after: succeeded ? 'deleted' : statusBefore,
+        is_default_before: wasDefault,
+        // After a successful delete the row is gone; if it was the
+        // default the consumer remapped to a fallback above, so this
+        // DS is no longer the default either way.
+        is_default_after: false,
+        error_code: errorCode,
+        duration_ms: Math.round(performance.now() - startedAt),
+      });
     }
+  }
+
+  function handleMakeDefaultClick(system: DesignSystemSummary): void {
+    const wasDefault = system.id === selectedId;
+    const statusBefore = mapStatusToTracking(system.status);
+    onSelect(system.id);
+    trackDesignSystemStatusResult(analytics.track, {
+      page_name: 'design_systems',
+      area: 'design_system_status',
+      action: wasDefault ? 'unset_default' : 'set_default',
+      result: 'success',
+      design_system_id: system.id,
+      status_before: statusBefore,
+      status_after: statusBefore,
+      is_default_before: wasDefault,
+      is_default_after: !wasDefault,
+      duration_ms: 0,
+    });
   }
 
   return (
     <div className="tab-panel design-systems-manager" data-testid="design-systems-tab">
-      <section className="ds-settings-card" aria-label="Design Systems">
+      <div className="ds-manager-tabs">
+        <div className="subtab-pill" role="tablist" aria-label={t('dsManager.areaAria')}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={primaryCollection === 'design-system'}
+            className={primaryCollection === 'design-system' ? 'active' : ''}
+            onClick={() => setPrimaryCollection('design-system')}
+          >
+            {t('dsManager.tabDesignSystem')}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={primaryCollection === 'template'}
+            className={primaryCollection === 'template' ? 'active' : ''}
+            onClick={() => setPrimaryCollection('template')}
+          >
+            {t('dsManager.tabTemplate')}
+          </button>
+        </div>
+      </div>
+
+      {primaryCollection === 'design-system' ? (
+        <div className="ds-manager-subtabs">
+          <div className="ds-tag-tabs" role="tablist" aria-label={t('dsManager.sourceAria')}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={designSystemCollection === 'mine'}
+              className={designSystemCollection === 'mine' ? 'active' : ''}
+              onClick={() => setDesignSystemCollection('mine')}
+            >
+              {t('dsManager.yourSystems')}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={designSystemCollection === 'official'}
+              className={designSystemCollection === 'official' ? 'active' : ''}
+              onClick={() => setDesignSystemCollection('official')}
+            >
+              {t('dsManager.officialPresets')}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={designSystemCollection === 'enterprise'}
+              className={designSystemCollection === 'enterprise' ? 'active' : ''}
+              onClick={() => setDesignSystemCollection('enterprise')}
+            >
+              {t('dsManager.enterprise')}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="ds-manager-subtabs">
+          <div className="ds-tag-tabs" role="tablist" aria-label={t('dsManager.templateSourceAria')}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={templateCollection === 'mine'}
+              className={templateCollection === 'mine' ? 'active' : ''}
+              onClick={() => setTemplateCollection('mine')}
+            >
+              {t('dsManager.yourTemplates')}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={templateCollection === 'enterprise'}
+              className={templateCollection === 'enterprise' ? 'active' : ''}
+              onClick={() => setTemplateCollection('enterprise')}
+            >
+              {t('dsManager.enterprise')}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {primaryCollection === 'design-system' && designSystemCollection === 'mine' ? (
+        <section className="ds-settings-card" aria-label={t('dsManager.yourSystemsAria')}>
         <div className="ds-settings-card__head">
           <div>
-            <span className="ds-manager-eyebrow">Design Systems</span>
-            <h2>Your systems</h2>
+            <span className="ds-manager-eyebrow">{t('dsManager.eyebrowDesignSystems')}</span>
+            <h2>{t('dsManager.yourSystemsHeading')}</h2>
           </div>
           <select
-            aria-label="Filter design systems"
+            aria-label={t('dsManager.filterAria')}
             value={userFilter}
             onChange={(event) => setUserFilter(event.target.value as UserListFilter)}
           >
-            <option value="all">All</option>
-            <option value="published">Published</option>
-            <option value="draft">Draft</option>
+            <option value="all">{t('dsManager.filterAll')}</option>
+            <option value="published">{t('dsManager.filterPublished')}</option>
+            <option value="draft">{t('dsManager.filterDraft')}</option>
           </select>
         </div>
 
         {onCreate ? (
           <button type="button" className="ds-create-row" onClick={onCreate}>
             <span>
-              <strong>Create new design system</strong>
-              <small>Teach Open Design your brand, product, code, assets, and design references.</small>
+              <strong>{t('dsManager.createTitle')}</strong>
+              <small>{t('dsManager.createBody')}</small>
             </span>
-            <span className="ds-create-row__action">Create</span>
+            <span className="ds-create-row__action">{t('dsManager.createAction')}</span>
           </button>
         ) : null}
 
         {userSystems.length === 0 ? (
           <div className="ds-user-empty">
-            No design systems yet. Create one from real product context, review the draft, then publish it for future projects.
+            {t('dsManager.emptyMine')}
           </div>
         ) : (
           <div className="ds-user-list">
@@ -302,10 +506,10 @@ export function DesignSystemsTab({
                   >
                     <span className="ds-user-row__title">
                       <span>{system.title}</span>
-                      {selected ? <span className="ds-card-badge">Default</span> : null}
+                      {selected ? <span className="ds-card-badge">{t('dsManager.badgeDefault')}</span> : null}
                     </span>
                     <span className="ds-user-row__meta">
-                      You · updated {formatShortDate(system.updatedAt)}
+                      {t('dsManager.rowMetaUpdated', { date: formatShortDate(system.updatedAt) })}
                     </span>
                   </button>
                   <div className="ds-user-row__actions">
@@ -316,17 +520,17 @@ export function DesignSystemsTab({
                         onClick={() => onOpenSystem(system.id)}
                         disabled={busy}
                       >
-                        Edit
+                        {t('dsManager.edit')}
                       </button>
                     ) : null}
                     {!selected && canUseInProjects ? (
                       <button
                         type="button"
                         className="ghost compact"
-                        onClick={() => onSelect(system.id)}
+                        onClick={() => handleMakeDefaultClick(system)}
                         disabled={busy}
                       >
-                        Make default
+                        {t('dsManager.makeDefault')}
                       </button>
                     ) : null}
                     <button
@@ -336,23 +540,22 @@ export function DesignSystemsTab({
                       onClick={() => void togglePublished(system)}
                       disabled={busy}
                     >
-                      <span>{status === 'published' ? 'Published' : 'Draft'}</span>
+                      <span>{status === 'published' ? t('dsManager.statusPublished') : t('dsManager.statusDraft')}</span>
                       <i aria-hidden />
                     </button>
                     {onOpenSystem ? (
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label={`Open ${system.title}`}
+                      <Button
+                        size="icon"
+                        aria-label={t('dsManager.openSystemAria', { title: system.title })}
                         onClick={() => onOpenSystem(system.id)}
                       >
                         <Icon name="external-link" />
-                      </button>
+                      </Button>
                     ) : null}
                     <button
                       type="button"
                       className="icon-btn danger"
-                      aria-label={`Delete ${system.title}`}
+                      aria-label={t('dsManager.deleteSystemAria', { title: system.title })}
                       onClick={() => void deleteSystem(system)}
                       disabled={busy}
                     >
@@ -364,27 +567,15 @@ export function DesignSystemsTab({
             })}
           </div>
         )}
-      </section>
+        </section>
+      ) : null}
 
-      <section className="ds-settings-card ds-templates-card" aria-label="Templates">
+      {primaryCollection === 'design-system' && designSystemCollection === 'official' ? (
+        <section className="ds-settings-card" aria-label={t('dsManager.presetsAria')}>
         <div className="ds-settings-card__head">
           <div>
-            <span className="ds-manager-eyebrow">Templates</span>
-            <h2>Templates</h2>
-          </div>
-        </div>
-        <div className="ds-user-empty">
-          No templates yet. Create one from any generated project via Share once template publishing is enabled.
-        </div>
-      </section>
-
-      <p className="ds-private-note">Only you can view these settings.</p>
-
-      <section className="ds-settings-card" aria-label="Built-in design systems">
-        <div className="ds-settings-card__head">
-          <div>
-            <span className="ds-manager-eyebrow">Library</span>
-            <h2>Built-in library</h2>
+            <span className="ds-manager-eyebrow">{t('dsManager.eyebrowLibrary')}</span>
+            <h2>{t('dsManager.officialPresets')}</h2>
           </div>
         </div>
         <div className="tab-panel-toolbar ds-manager-toolbar">
@@ -494,8 +685,80 @@ export function DesignSystemsTab({
             ))}
           </div>
         )}
-      </section>
+        </section>
+      ) : null}
+
+      {primaryCollection === 'design-system' && designSystemCollection === 'enterprise' ? (
+        <ComingSoonPanel
+          eyebrow={t('dsManager.eyebrowDesignSystems')}
+          title={t('dsManager.enterpriseDsTitle')}
+          body={t('dsManager.enterpriseDsBody')}
+          comingSoonLabel={t('dsManager.comingSoonBadge')}
+        />
+      ) : null}
+
+      {primaryCollection === 'template' && templateCollection === 'mine' ? (
+        <section className="ds-settings-card ds-templates-card" aria-label={t('dsManager.yourTemplatesAria')}>
+          <div className="ds-settings-card__head">
+            <div>
+              <span className="ds-manager-eyebrow">{t('dsManager.eyebrowTemplates')}</span>
+              <h2>{t('dsManager.yourTemplates')}</h2>
+            </div>
+          </div>
+          {templates.length === 0 ? (
+            <div className="ds-user-empty">
+              {t('dsManager.emptyTemplates')}
+            </div>
+          ) : (
+            <div className="ds-template-list">
+              {templates.map((template) => (
+                <div className="ds-template-row" key={template.id}>
+                  <div>
+                    <strong>{template.name}</strong>
+                    <span>{template.description?.trim() || t('dsManager.templateDescFallback')}</span>
+                  </div>
+                  <small>{formatShortDate(template.createdAt)}</small>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      {primaryCollection === 'template' && templateCollection === 'enterprise' ? (
+        <ComingSoonPanel
+          eyebrow={t('dsManager.eyebrowTemplates')}
+          title={t('dsManager.enterpriseTplTitle')}
+          body={t('dsManager.enterpriseTplBody')}
+          comingSoonLabel={t('dsManager.comingSoonBadge')}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function ComingSoonPanel({
+  eyebrow,
+  title,
+  body,
+  comingSoonLabel,
+}: {
+  eyebrow: string;
+  title: string;
+  body: string;
+  comingSoonLabel: string;
+}) {
+  return (
+    <section className="ds-settings-card ds-coming-soon-card" aria-label={title}>
+      <div className="ds-settings-card__head">
+        <div>
+          <span className="ds-manager-eyebrow">{eyebrow}</span>
+          <h2>{title}</h2>
+        </div>
+        <span className="ds-coming-soon-badge">{comingSoonLabel}</span>
+      </div>
+      <div className="ds-user-empty">{body}</div>
+    </section>
   );
 }
 
